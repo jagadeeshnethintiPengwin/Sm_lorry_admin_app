@@ -1,0 +1,21 @@
+<resources>
+
+    <!-- Base application theme. -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+
+        <!--
+          Draw the app behind the status bar so the navy header (and the auth
+          screens' gradient heroes) extend underneath it, matching the HTML's
+          `.app-hdr { margin-top:-44px }`.
+
+          This also makes WindowInsets report a real top inset, which
+          `useTopInset()` reads to pad the header. Without it the inset can be
+          0 and header controls end up hidden behind the status bar.
+        -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+</resources>
