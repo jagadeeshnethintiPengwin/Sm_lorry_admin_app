@@ -85,9 +85,10 @@ const TabItem = memo<TabItemProps>(
       >
         <Animated.View style={[styles.dot, dotStyle]} />
         <Animated.View style={[styles.iconWrap, iconStyle]}>
+          {/* 18, down from 22 — the glyph sat heavy against its 10px label. */}
           <Icon
             name={icon}
-            size={22}
+            size={18}
             color={focused ? palette.navy : palette.slate400}
             strokeWidth={focused ? 2.5 : 2}
           />
@@ -186,9 +187,11 @@ const styles = StyleSheet.create({
     gap: s(3),
     position: 'relative',
   },
+  // The well follows the glyph down, so the icon stays centred in it and the
+  // bar does not keep the height the larger icon needed.
   iconWrap: {
-    width: s(32),
-    height: s(32),
+    width: s(26),
+    height: s(26),
     alignItems: 'center',
     justifyContent: 'center',
   },

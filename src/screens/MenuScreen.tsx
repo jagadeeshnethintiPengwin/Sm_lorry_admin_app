@@ -5,7 +5,6 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
-  AppHeader,
   Content,
   Icon,
   IconWell,
@@ -13,6 +12,7 @@ import {
   Screen,
   TwinkleDot,
 } from '@components/index';
+import { useTopInset } from '@hooks/useTopInset';
 import { gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -43,6 +43,7 @@ type MenuRow = {
 export const MenuScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const topInset = useTopInset();
 
   const management: MenuRow[] = [
     {
@@ -174,8 +175,17 @@ export const MenuScreen: React.FC = () => {
 
   return (
     <Screen backgroundColor={palette.white}>
-      <AppHeader title="Menu" showBack onBackPress={navigation.goBack} />
-
+      {/*
+       * No header bar.
+       *
+       * Menu is a tab root, so the back chevron had nothing to pop — it called
+       * `goBack` on a stack with one screen in it — and the title only repeated
+       * the tab that had just been pressed. Both gone, which gives the owner
+       * card the top of the screen.
+       *
+       * `Screen` does not inset the top, so the hero now carries the status-bar
+       * inset itself; without it the gradient would run under the clock.
+       */}
       <Content padding={0} safeBottom>
         {/* Owner profile hero */}
         <LinearGradient
@@ -183,7 +193,7 @@ export const MenuScreen: React.FC = () => {
           locations={[0, 0.6, 1]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={styles.hero}
+          style={[styles.hero, { paddingTop: topInset + s(12) }]}
         >
           <RadialGlow
             size={140}
@@ -289,13 +299,19 @@ export const MenuScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  //  is applied inline — it carries the status-bar inset now that
+  // the gradient runs to the top of the screen.
+  // `paddingTop` is applied inline — it carries the status-bar inset now that
+  // the gradient runs to the top of the screen.
   hero: {
-    paddingTop: s(18),
     paddingHorizontal: s(14),
     paddingBottom: s(40),
     overflow: 'hidden',
   },
-  heroTwinkle: { position: 'absolute', top: s(14), right: s(24) },
+  // Pushed down from 14: it used to sit below a header bar, and at the old
+  // offset it would now fall behind the status bar and read as a stray dot
+  // next to the clock.
+  heroTwinkle: { position: 'absolute', top: s(56), right: s(24) },
   heroRow: {
     position: 'relative',
     flexDirection: 'row',

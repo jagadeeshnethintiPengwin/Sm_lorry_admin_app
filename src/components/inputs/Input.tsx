@@ -42,6 +42,13 @@ export type InputProps = Omit<TextInputProps, 'style'> & {
   inputStyle?: StyleProp<TextStyle>;
   /** Removes the border/background so the field can sit inside a compound row. */
   bare?: boolean;
+  /**
+   * Why this field was rejected, shown beneath it in red.
+   *
+   * Empty or absent means valid, so a caller can pass `errors.name` straight
+   * through without deciding whether there is anything to show.
+   */
+  error?: string;
 };
 
 const InputComponent: React.FC<InputProps> = ({
@@ -56,6 +63,8 @@ const InputComponent: React.FC<InputProps> = ({
   inputStyle,
   bare = false,
   multiline,
+  error,
+  accessibilityLabel,
   onFocus,
   onBlur,
   ...rest
@@ -100,7 +109,10 @@ const InputComponent: React.FC<InputProps> = ({
       <TextInput
         style={[
           bare ? styles.bare : styles.input,
-          !bare && focused ? styles.inputFocused : null,
+          // A rejected field stays red whether or not it has the caret, so
+          // the reason underneath is never left explaining an ordinary border.
+          !bare && error ? styles.inputInvalid : null,
+          !bare && focused && !error ? styles.inputFocused : null,
           multiline ? styles.multiline : null,
           minHeight !== undefined ? { minHeight: s(minHeight) } : null,
           inputStyle,
@@ -110,9 +122,17 @@ const InputComponent: React.FC<InputProps> = ({
         textAlignVertical={multiline ? 'top' : 'center'}
         onFocus={handleFocus}
         onBlur={handleBlur}
-        accessibilityLabel={rest.accessibilityLabel ?? label}
+        // A screen reader lands on the box, not the red text under it, so the
+        // reason has to travel with the label or it is never announced.
+        accessibilityLabel={
+          error
+            ? `${accessibilityLabel ?? label ?? ''}, ${error}`.trim()
+            : (accessibilityLabel ?? label)
+        }
         {...rest}
       />
+
+      <FieldError>{error}</FieldError>
     </View>
   );
 };
@@ -153,6 +173,13 @@ const styles = StyleSheet.create({
   inputFocused: {
     borderColor: palette.navy,
   },
+  inputInvalid: {
+    borderColor: palette.red,
+  },
+  error: {
+    ...font(9, '700', { color: palette.red }),
+    marginTop: s(3),
+  },
   bare: {
     flex: 1,
     minWidth: 0,
@@ -168,6 +195,22 @@ const styles = StyleSheet.create({
 
 export const Input = memo(InputComponent);
 Input.displayName = 'Input';
+
+/**
+ * The reason a field was rejected, in red beneath it.
+ *
+ * Rendered by `Input` itself and exported for the controls that are not text
+ * boxes — `Select` and `DateField` — so a form does not show two different
+ * kinds of error text depending on which control failed.
+ *
+ * Renders nothing at all when there is no error, which is what lets a screen
+ * pass `errors.someField` in unconditionally.
+ */
+export const FieldError: React.FC<{ children?: string }> = memo(
+  ({ children }) =>
+    children ? <Text style={styles.error}>{children}</Text> : null,
+);
+FieldError.displayName = 'FieldError';
 
 /**
  * The uppercase field label used on its own (outside `Input`).

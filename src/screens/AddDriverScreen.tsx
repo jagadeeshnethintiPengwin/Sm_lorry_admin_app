@@ -10,6 +10,7 @@ import {
   Card,
   Content,
   Footer,
+  FieldError,
   Icon,
   ImageSourceSheet,
   Input,
@@ -19,6 +20,18 @@ import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
+import { driverService } from '@services/fleet.service';
+import {
+  isClean,
+  packLicence,
+  packMobile,
+  validateFutureDate,
+  validateLicence,
+  validateMobile,
+  validateName,
+  validatePastDate,
+  type Errors,
+} from '@utils/validation';
 
 /**
  * Screen 12 — Add New Driver.
@@ -28,6 +41,16 @@ import { s } from '@theme/metrics';
  *   UPLOAD DOCUMENTS dashed gold tiles · gold Add Driver footer
  */
 const LICENCE_CLASSES = ['HMV', 'MGV', 'LMV', 'MCWG'];
+
+/** The fields the form validates, which is what `errors` is keyed by. */
+type DriverForm = {
+  name: string;
+  mobile: string;
+  dob: string;
+  dlNumber: string;
+  issueDate: string;
+  validTill: string;
+};
 
 export const AddDriverScreen: React.FC = () => {
   const navigation = useNavigation();
@@ -45,6 +68,10 @@ export const AddDriverScreen: React.FC = () => {
   const [pan, setPan] = useState('');
   const [target, setTarget] = useState<string | null>(null);
 
+  const [errors, setErrors] = useState<Errors<DriverForm>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
   const toggleClass = useCallback((value: string) => {
     setClasses(current =>
       current.includes(value)
@@ -54,6 +81,53 @@ export const AddDriverScreen: React.FC = () => {
   }, []);
 
   const closeSheet = useCallback(() => setTarget(null), []);
+
+  /**
+   * Registers the driver and their sign-in account.
+   *
+   * The footer button used to be `navigation.goBack` — the whole form was
+   * collected and dropped, so "Add Driver" added nobody. The licence expiry is
+   * checked before anything is sent because a driver whose licence has already
+   * run out is the one case this screen exists to catch, and nothing
+   * downstream looks again.
+   */
+  const addDriver = useCallback(async () => {
+    const found: Errors<DriverForm> = {
+      name: validateName(name),
+      mobile: validateMobile(mobile),
+      dob: validatePastDate('date of birth')(dob),
+      dlNumber: validateLicence(dlNumber),
+      issueDate: validatePastDate('issue date')(issueDate),
+      validTill: validateFutureDate('expiry date')(validTill),
+    };
+
+    setErrors(found);
+    setSubmitError(null);
+    if (!isClean(found)) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await driverService.create({
+        name: name.trim(),
+        // The API normalises to E.164 itself; sending the ten national digits
+        // is what the +91 prefix on the field already promised.
+        mobile: packMobile(mobile),
+        licenceNumber: packLicence(dlNumber),
+        licenceValid: validTill,
+      });
+      navigation.goBack();
+    } catch (error) {
+      // A number or licence already on the roster arrives here as the sentence
+      // the API wrote for it, naming who holds it.
+      setSubmitError(
+        error instanceof Error ? error.message : 'Could not add the driver',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [dlNumber, dob, issueDate, mobile, name, navigation, validTill]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -117,12 +191,15 @@ export const AddDriverScreen: React.FC = () => {
             onChangeText={setName}
             placeholder="e.g. Ramesh Kumar"
             marginBottom={10}
+            error={errors.name}
           />
 
           <Text style={styles.fieldLabel}>
             MOBILE NUMBER <Text style={styles.star}>*</Text>
           </Text>
-          <View style={styles.prefixWrap}>
+          <View
+            style={[styles.prefixWrap, errors.mobile && styles.prefixInvalid]}
+          >
             <Text style={styles.prefix}>+91</Text>
             <Input
               value={mobile}
@@ -134,8 +211,11 @@ export const AddDriverScreen: React.FC = () => {
               marginBottom={0}
               containerStyle={styles.prefixInputWrap}
               inputStyle={styles.prefixInput}
+              accessibilityLabel="Mobile number"
             />
           </View>
+          {/* The box is a compound row, so its reason sits outside it. */}
+          <FieldError>{errors.mobile}</FieldError>
 
           <View style={styles.row}>
             <View style={styles.col}>
@@ -144,6 +224,8 @@ export const AddDriverScreen: React.FC = () => {
                 value={dob}
                 onChange={setDob}
                 marginBottom={10}
+                maximumDate={new Date()}
+                error={errors.dob}
               />
             </View>
             <View style={styles.col}>
@@ -180,10 +262,11 @@ export const AddDriverScreen: React.FC = () => {
             required
             value={dlNumber}
             onChangeText={setDlNumber}
-            placeholder="DLAP 04XXXXXXXX"
+            placeholder="AP04 20100012345"
             autoCapitalize="characters"
             marginBottom={10}
             inputStyle={styles.spaced}
+            error={errors.dlNumber}
           />
 
           <View style={styles.row}>
@@ -193,14 +276,19 @@ export const AddDriverScreen: React.FC = () => {
                 value={issueDate}
                 onChange={setIssueDate}
                 marginBottom={10}
+                maximumDate={new Date()}
+                error={errors.issueDate}
               />
             </View>
             <View style={styles.col}>
               <DateField
                 label="Valid Till"
+                required
                 value={validTill}
                 onChange={setValidTill}
                 marginBottom={10}
+                minimumDate={new Date()}
+                error={errors.validTill}
               />
             </View>
           </View>
@@ -273,16 +361,24 @@ export const AddDriverScreen: React.FC = () => {
             </Pressable>
           ))}
         </View>
+
+        {submitError ? (
+          <Card padding={11} marginBottom={0} style={styles.errorCard}>
+            <Icon name="alert-circle" size={14} color={palette.red} />
+            <Text style={styles.errorText}>{submitError}</Text>
+          </Card>
+        ) : null}
       </Content>
 
       <Footer>
         <Button
-          label="Add Driver"
+          label={saving ? 'Adding…' : 'Add Driver'}
           variant="gold"
           icon="user-check"
           padding={12}
           fontSize={13}
-          onPress={navigation.goBack}
+          loading={saving}
+          onPress={addDriver}
         />
       </Footer>
 
@@ -377,6 +473,23 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     overflow: 'hidden',
     marginBottom: s(10),
+  },
+  prefixInvalid: {
+    borderColor: palette.red,
+    // The reason sits below this row rather than inside it, so the gap that
+    // normally separates fields would strand it against the next one.
+    marginBottom: s(2),
+  },
+  errorCard: {
+    marginTop: s(12),
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: s(8),
+    backgroundColor: palette.redTint,
+  },
+  errorText: {
+    flex: 1,
+    ...font(10, '700', { color: palette.red }),
   },
   prefix: {
     ...font(11, '800', { color: palette.navy }),

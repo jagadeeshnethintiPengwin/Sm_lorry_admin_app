@@ -10,6 +10,7 @@ import {
   Card,
   Content,
   Icon,
+  ListState,
   Screen,
 } from '@components/index';
 import { gradients, palette } from '@theme/colors';
@@ -18,6 +19,9 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { driverService } from '@services/fleet.service';
+import type { AdminDriver } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 10 — Drivers List.
@@ -44,64 +48,62 @@ type DriverRow = {
   tabs: Tab[];
 };
 
-const DRIVERS: DriverRow[] = [
-  {
-    id: 'd1',
-    name: 'Ramesh Kumar',
-    initials: 'RK',
-    avatar: gradients.navyHero,
+/**
+ * A roster row as the API sends it, turned into the row this screen draws.
+ *
+ * Replaces sixty lines of literal drivers that made the panel show the same
+ * five people on every device, under a header that claimed thirty-eight of
+ * them while the dashboard beside it read the real twelve.
+ */
+const initialsOf = (name: string): string =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0]?.toUpperCase() ?? '')
+    .join('');
+
+/** Presence decides the avatar, so the list reads at a glance. */
+const AVATAR: Record<string, readonly string[]> = {
+  ONLINE: gradients.navyHero,
+  ON_TRIP: gradients.gold,
+  OFFLINE: gradients.red,
+};
+
+function toRow(driver: AdminDriver): DriverRow {
+  const status = String(driver.status ?? '').toUpperCase();
+  const onTrip = status === 'ON_TRIP';
+  const online = status === 'ONLINE' || onTrip;
+
+  const user = (driver.user ?? {}) as { name?: string; mobile?: string };
+  const name = user.name ?? 'Driver';
+
+  const vehicle = driver.vehicle as { registration?: string } | null;
+  const rating = Number(driver.rating ?? 0);
+  const trips = Number(driver.totalTrips ?? 0);
+
+  return {
+    id: String(driver.id),
+    name,
+    initials: initialsOf(name),
+    avatar: AVATAR[status] ?? gradients.navyHero,
     avatarTextColor: palette.white,
-    online: true,
-    score: '98% ON-TIME',
-    scoreColor: palette.green,
-    meta: '+91 98765 43210 · 240 trips · 4y',
-    vehicle: 'AP 31 XX 1234 · IN TRIP',
-    onTrip: true,
-    tabs: ['online', 'on_trip'],
-  },
-  {
-    id: 'd2',
-    name: 'Suresh Menon',
-    initials: 'SM',
-    avatar: gradients.red,
-    avatarTextColor: palette.white,
-    online: false,
-    score: '94% ON-TIME',
-    scoreColor: palette.gold,
-    meta: '+91 90140 22883 · 118 trips · 2y',
-    vehicle: 'AP 39 TR 4522',
-    onTrip: false,
-    tabs: ['offline'],
-  },
-  {
-    id: 'd3',
-    name: 'Prakash Reddy',
-    initials: 'PK',
-    avatar: gradients.gold,
-    avatarTextColor: palette.navy,
-    online: true,
-    score: '99% ON-TIME',
-    scoreColor: palette.green,
-    meta: '+91 88863 21044 · 388 trips · 6y',
-    vehicle: 'AP 05 CH 9912 · IN TRIP',
-    onTrip: true,
-    tabs: ['online', 'on_trip'],
-  },
-  {
-    id: 'd4',
-    name: 'Manoj K',
-    initials: 'MK',
-    avatar: gradients.navyHero,
-    avatarTextColor: palette.white,
-    online: true,
-    score: '89% ON-TIME',
-    scoreColor: palette.red,
-    meta: '+91 77998 15577 · 42 trips · 1y',
-    onTrip: false,
-    rail: true,
-    tabs: ['online'],
-  },
-];
+    online,
+    // The roster carries a rating, not an on-time percentage — the latter is a
+    // per-driver query and would be one request per row.
+    score: `${rating.toFixed(1)} ★ RATING`,
+    scoreColor:
+      rating >= 4.5 ? palette.green : rating >= 4 ? palette.gold : palette.red,
+    meta: [user.mobile, `${trips} trip${trips === 1 ? '' : 's'}`]
+      .filter(Boolean)
+      .join(' · '),
+    vehicle: vehicle?.registration
+      ? `${vehicle.registration}${onTrip ? ' · IN TRIP' : ''}`
+      : undefined,
+    onTrip,
+    tabs: onTrip ? ['online', 'on_trip'] : online ? ['online'] : ['offline'],
+  };
+}
 
 export const DriversScreen: React.FC = () => {
   const navigation =
@@ -110,9 +112,16 @@ export const DriversScreen: React.FC = () => {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('online');
 
+  const { data, loading, error, refetch } = useApi(
+    () => driverService.page({ limit: 100 }),
+    [],
+  );
+
+  const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
+
   const visible = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return DRIVERS.filter(driver => {
+    return rows.filter(driver => {
       const inTab = driver.tabs.includes(tab);
       if (!term) {
         return inTab;
@@ -123,7 +132,15 @@ export const DriversScreen: React.FC = () => {
           driver.meta.toLowerCase().includes(term))
       );
     });
-  }, [query, tab]);
+  }, [query, rows, tab]);
+
+  // The API's own tally, which covers the whole roster rather than this page.
+  const counts = data?.meta?.counts;
+  const total = data?.meta?.total ?? rows.length;
+  const onlineCount =
+    counts !== undefined
+      ? (counts.online ?? 0) + (counts.onTrip ?? 0)
+      : rows.filter(r => r.online).length;
 
   const openDriver = useCallback(
     (id: string) => navigation.navigate('DriverDetails', { driverId: id }),
@@ -139,7 +156,7 @@ export const DriversScreen: React.FC = () => {
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Drivers"
-        subtitle="38 total · 32 online"
+        subtitle={`${total} total · ${onlineCount} online`}
         showBack
         onBackPress={navigation.goBack}
       />
@@ -161,9 +178,12 @@ export const DriversScreen: React.FC = () => {
       <View style={styles.tabs}>
         {(
           [
-            ['online', 'Online 32'],
-            ['on_trip', 'On Trip 18'],
-            ['offline', 'Offline 6'],
+            ['online', `Online ${onlineCount}`],
+            ['on_trip', `On Trip ${counts?.onTrip ?? rows.filter(r => r.onTrip).length}`],
+            [
+              'offline',
+              `Offline ${counts?.offline ?? rows.filter(r => !r.online).length}`,
+            ],
           ] as Array<[Tab, string]>
         ).map(([key, label]) => (
           <Pressable
@@ -181,6 +201,20 @@ export const DriversScreen: React.FC = () => {
       </View>
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
+        <ListState
+          loading={loading}
+          error={error}
+          empty={visible.length === 0}
+          what="drivers"
+          emptyIcon="user-plus"
+          emptyHint={
+            query.trim()
+              ? 'Nothing matches that search.'
+              : 'Add a driver with the + button to get started.'
+          }
+          onRetry={refetch}
+        />
+
         {visible.map(driver => (
           <Card
             key={driver.id}
@@ -217,13 +251,20 @@ export const DriversScreen: React.FC = () => {
 
               <View style={styles.body}>
                 <View style={styles.head}>
-                  <Text style={styles.name}>{driver.name}</Text>
-                  <Text style={[styles.score, { color: driver.scoreColor }]}>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {driver.name}
+                  </Text>
+                  <Text
+                    style={[styles.score, { color: driver.scoreColor }]}
+                    numberOfLines={1}
+                  >
                     {driver.score}
                   </Text>
                 </View>
 
-                <Text style={styles.meta}>{driver.meta}</Text>
+                <Text style={styles.meta} numberOfLines={1}>
+                  {driver.meta}
+                </Text>
 
                 <View style={styles.footer}>
                   {driver.vehicle ? (
@@ -237,6 +278,7 @@ export const DriversScreen: React.FC = () => {
                         style={
                           driver.onTrip ? styles.vehicleOn : styles.vehicleOff
                         }
+                        numberOfLines={1}
                       >
                         {driver.vehicle}
                       </Text>
@@ -296,7 +338,7 @@ export const DriversScreen: React.FC = () => {
           end={{ x: 1, y: 1 }}
           style={styles.fab}
         >
-          <Icon name="plus" size={22} color={palette.navy} />
+          <Icon name="plus" size={18} color={palette.navy} />
         </LinearGradient>
       </Pressable>
     </Screen>
@@ -376,8 +418,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: s(8),
   },
-  name: font(12, '800', { color: palette.navy }),
-  score: font(9, '800'),
+  /*
+   * The name yields, the score does not.
+   *
+   * `space-between` with no rule on either side lets whichever is wider take
+   * the room. The mock abbreviated its people — "Ramesh K" — while the roster
+   * sends the name the account was registered with, so a longer one pushed the
+   * score off the card.
+   */
+  name: {
+    ...font(12, '800', { color: palette.navy }),
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  score: { ...font(9, '800'), flexShrink: 0 },
   meta: {
     ...font(9, '600', { color: palette.slate500 }),
     marginTop: s(2),
@@ -386,9 +440,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: s(8),
     marginTop: s(6),
   },
-  vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: s(4) },
+  vehicleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(4),
+    flexShrink: 1,
+    minWidth: 0,
+  },
   vehicleOn: font(9, '800', { color: palette.navy }),
   vehicleOff: font(9, '800', { color: palette.slate500 }),
   noVehicle: font(9, '800', { color: palette.red }),
@@ -429,9 +490,11 @@ const styles = StyleSheet.create({
   assignText: font(9, '800', { color: palette.navy }),
 
   fabWrap: { position: 'absolute', bottom: s(20), right: s(20) },
+  // 44, down from 54. The glyph drops 22 -> 18 with it, so the plus keeps
+  // its proportion inside the circle rather than just gaining padding.
   fab: {
-    width: s(54),
-    height: s(54),
+    width: s(44),
+    height: s(44),
     borderRadius: radius.full,
     alignItems: 'center',
     justifyContent: 'center',

@@ -13,7 +13,45 @@ export type TabParamList = {
 export type AuthStackParamList = {
   Splash: undefined;
   Login: undefined;
-  OtpVerification: { mobile: string };
+  /**
+   * `verificationId` travels with the number.
+   *
+   * The OTP screen used to post the literal `'mock-verification'`, because the
+   * id the API returns from `otp/send` had nowhere to live — so verification
+   * was checked against a challenge that does not exist.
+   *
+   * `devCode` is only ever present outside production, where the API returns
+   * the code in the response so the panel can be driven without an SMS gateway.
+   */
+  OtpVerification: {
+    mobile: string;
+    verificationId: string;
+    devCode?: string;
+    /**
+     * Where a verified code leads.
+     *
+     * The same screen serves signing in and proving a number before a PIN is
+     * replaced, and only the caller knows which — so `intent` says whether a
+     * correct code should sign in or hand on to Reset PIN.
+     */
+    intent?: 'sign-in' | 'reset-pin';
+  };
+
+  /** Forgot PIN, step one: the number a reset code is sent to. */
+  ForgotPin: undefined;
+
+  /**
+   * Setting the new PIN.
+   *
+   * Reached two ways, and it has to know which: with a `verificationId` after
+   * Forgot PIN proved the number by OTP, or without one when the operator
+   * chose Reset PIN and will prove themselves with the current PIN instead.
+   */
+  ResetPin: {
+    mobile: string;
+    verificationId?: string;
+    code?: string;
+  };
 };
 
 /** Root stack — everything reachable once signed in. */

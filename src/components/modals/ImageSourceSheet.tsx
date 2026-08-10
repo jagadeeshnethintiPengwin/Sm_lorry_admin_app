@@ -9,7 +9,7 @@ import { gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
-import { s } from '@theme/metrics';
+import { s, wp } from '@theme/metrics';
 
 /**
  * "Take photo / choose from gallery / attach a file" dialog.
@@ -107,7 +107,14 @@ const ImageSourceSheetComponent: React.FC<ImageSourceSheetProps> = ({
   onDocument,
   onRemove,
 }) => (
-  <CenterModal visible={visible} onClose={onClose} padding={0}>
+  // The side inset is a share of the display rather than a scaled mock value,
+  // so the dialog keeps the same visual margin on a narrow handset and a tablet.
+  <CenterModal
+    visible={visible}
+    onClose={onClose}
+    padding={0}
+    style={styles.dialog}
+  >
     {/* Navy header cap — the brand moment that lifts this above a plain list */}
     <LinearGradient
       colors={gradients.navyHero as unknown as string[]}
@@ -175,6 +182,8 @@ const ImageSourceSheetComponent: React.FC<ImageSourceSheetProps> = ({
 );
 
 const styles = StyleSheet.create({
+  /** Overrides `CenterModal`'s scaled inset with a share of the screen width. */
+  dialog: { marginHorizontal: wp(5) },
   header: {
     alignItems: 'center',
     paddingTop: s(20),

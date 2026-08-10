@@ -50,6 +50,19 @@ export const ms = (size: number, factor = 0.5) =>
 export const fs = (size: number) => round(scale(size));
 
 /**
+ * A straight percentage of the viewport, for the few places that want one.
+ *
+ * `s()` and friends convert a measurement taken from the 310px mock, which is
+ * what almost everything here needs. These are the escape hatch for a value
+ * expressed as a share of the screen in its own right — a dialog inset that
+ * should breathe with the display rather than track a number lifted from the
+ * design.
+ */
+export const wp = (percent: number) => round(widthPercentageToDP(`${percent}%`));
+export const hp = (percent: number) =>
+  round(heightPercentageToDP(`${percent}%`));
+
+/**
  * The mock uses `1px` borders. `hairlineWidth` is the thinnest line the device
  * can draw without anti-aliasing blur — the closest visual equivalent.
  */

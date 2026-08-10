@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -23,6 +23,17 @@ import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
 import type { IconName } from '@components/common/Icon';
+import { driverService, vehicleService } from '@services/fleet.service';
+import type { AdminDriver } from '@services/fleet.service';
+import {
+  isClean,
+  packRegistration,
+  validateCapacity,
+  validateRegistration,
+  validateRequired,
+  validateYear,
+  type Errors,
+} from '@utils/validation';
 
 /**
  * Screen 8 — Add New Vehicle.
@@ -32,24 +43,44 @@ import type { IconName } from '@components/common/Icon';
  *   uploaded slot turns gold with a check · Assign Driver Now switch row ·
  *   gold Add to Fleet footer
  */
+/**
+ * The values are the words the API stores, not slugs.
+ *
+ * `Vehicle.type` and `Vehicle.make` are free text that every fleet screen
+ * renders directly, and the roster filters on `type` by exact match. Sending
+ * `14ft` and `tata` — which is what these options used to carry — would have
+ * written those into the fleet, so the vehicles list showed "14ft" and the
+ * type filter matched nothing an operator could pick.
+ */
 const VEHICLE_TYPES = [
-  { label: 'Mini Truck (up to 1 Ton)', value: 'mini' },
-  { label: '14 Ft Truck (up to 7 Ton)', value: '14ft' },
-  { label: '17 Ft Truck (up to 9 Ton)', value: '17ft' },
-  { label: '19 Ft Truck (up to 12 Ton)', value: '19ft' },
-  { label: '22 Ft Trailer', value: '22ft' },
-  { label: '32 Ft Trailer', value: '32ft' },
-  { label: 'Container', value: 'container' },
+  { label: 'Mini Truck (up to 1 Ton)', value: 'Mini Truck' },
+  { label: '14 Ft Truck (up to 7 Ton)', value: '14 Ft Truck' },
+  { label: '17 Ft Truck (up to 9 Ton)', value: '17 Ft Truck' },
+  { label: '19 Ft Truck (up to 12 Ton)', value: '19 Ft Truck' },
+  { label: '22 Ft Trailer', value: '22 Ft Trailer' },
+  { label: '32 Ft Trailer', value: '32 Ft Trailer' },
+  { label: 'Container', value: 'Container' },
 ];
 
 const MAKES = [
-  { label: 'Tata Motors', value: 'tata' },
-  { label: 'Ashok Leyland', value: 'ashok' },
-  { label: 'Eicher', value: 'eicher' },
-  { label: 'Bharat Benz', value: 'benz' },
-  { label: 'Mahindra', value: 'mahindra' },
-  { label: 'Volvo', value: 'volvo' },
+  { label: 'Tata Motors', value: 'Tata Motors' },
+  { label: 'Ashok Leyland', value: 'Ashok Leyland' },
+  { label: 'Eicher', value: 'Eicher' },
+  { label: 'Bharat Benz', value: 'Bharat Benz' },
+  { label: 'Mahindra', value: 'Mahindra' },
+  { label: 'Volvo', value: 'Volvo' },
 ];
+
+/** The fields the form validates, which is what `errors` is keyed by. */
+type VehicleForm = {
+  registration: string;
+  type: string;
+  capacity: string;
+  year: string;
+  make: string;
+  model: string;
+  driverId: string;
+};
 
 type DocSlot = {
   key: string;
@@ -98,16 +129,67 @@ export const AddVehicleScreen: React.FC = () => {
   const [type, setType] = useState('');
   const [capacity, setCapacity] = useState('');
   const [year, setYear] = useState('');
-  const [make, setMake] = useState('tata');
+  const [make, setMake] = useState('Tata Motors');
   const [model, setModel] = useState('');
   const [chassis, setChassis] = useState('');
   const [engine, setEngine] = useState('');
   const [assignNow, setAssignNow] = useState(false);
+  const [driverId, setDriverId] = useState('');
 
-  /** The mock ships Insurance already uploaded as `insurance.pdf`. */
+  const [errors, setErrors] = useState<Errors<VehicleForm>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  /**
+   * Drivers with no truck of their own, for the assign row.
+   *
+   * `Vehicle_driverId_key` is unique, so a driver already behind a wheel would
+   * be refused by the API — offering them here would be offering a choice that
+   * cannot be made.
+   */
+  const [freeDrivers, setFreeDrivers] = useState<AdminDriver[]>([]);
+
+  useEffect(() => {
+    if (!assignNow || freeDrivers.length > 0) {
+      return;
+    }
+    let cancelled = false;
+    driverService
+      .available()
+      .then(rows => {
+        if (!cancelled) {
+          setFreeDrivers(rows.filter(row => !row.vehicle));
+        }
+      })
+      // A roster that will not load must not block registering the truck; the
+      // driver can be assigned from vehicle details afterwards.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [assignNow, freeDrivers.length]);
+
+  const driverOptions = freeDrivers.map(row => ({
+    label:
+      ((row.user as { name?: string } | undefined)?.name ?? 'Driver') +
+      ((row.user as { mobile?: string } | undefined)?.mobile
+        ? ` · ${(row.user as { mobile?: string }).mobile}`
+        : ''),
+    value: row.id,
+  }));
+
+  /**
+   * Nothing is on file for a truck that does not exist yet.
+   *
+   * Insurance used to start as `insurance.pdf`, carried over from the HTML
+   * mock, where it was there to show what a filled tile looks like. On a real
+   * Add Vehicle form it meant every new lorry claimed to have insurance on
+   * file before anyone had uploaded anything — the one document you would
+   * least want to be wrong about.
+   */
   const [uploads, setUploads] = useState<Record<string, string | null>>({
     rc: null,
-    insurance: 'insurance.pdf',
+    insurance: null,
     fitness: null,
     puc: null,
   });
@@ -116,15 +198,68 @@ export const AddVehicleScreen: React.FC = () => {
   const closeSheet = useCallback(() => setTarget(null), []);
 
   /**
-   * Registering the truck is only half the job — the RC, insurance, fitness
-   * and PUC still have to be filed, so hand straight off to Upload Document
-   * rather than dropping back to the list.
+   * Registers the truck, then hands off to Upload Document.
+   *
+   * The screen used to do only the second half: it navigated to the upload
+   * step and threw the whole form away, so "Add to Fleet" added nothing and
+   * the vehicle never existed. Everything typed here is now written first, and
+   * the handoff only happens once the API has confirmed it — the RC,
+   * insurance, fitness and PUC still have to be filed against a real vehicle.
    */
-  const addToFleet = useCallback(() => {
-    navigation.navigate('UploadDocument', {
-      ownerLabel: registration.trim() || 'New vehicle',
-    });
-  }, [navigation, registration]);
+  const addToFleet = useCallback(async () => {
+    const found: Errors<VehicleForm> = {
+      registration: validateRegistration(registration),
+      type: validateRequired('vehicle type')(type),
+      capacity: validateCapacity(capacity),
+      year: validateYear(year),
+      make: validateRequired('manufacturer')(make),
+      model: validateRequired('model')(model),
+      driverId:
+        assignNow && !driverId ? 'Choose a driver, or turn this off' : undefined,
+    };
+
+    setErrors(found);
+    setSubmitError(null);
+    if (!isClean(found)) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const created = await vehicleService.create({
+        registration: packRegistration(registration),
+        type,
+        // Stored as the words the fleet screens render, from the number typed.
+        capacity: `${capacity.trim()} Ton`,
+        make,
+        model: model.trim(),
+        year: Number(year),
+        ...(assignNow && driverId ? { driverId } : {}),
+      });
+
+      navigation.replace('UploadDocument', {
+        ownerLabel: (created.registration as string) ?? packRegistration(registration),
+      });
+    } catch (error) {
+      // A duplicate plate or an already-assigned driver arrives here as the
+      // sentence the API wrote for it, which is what the operator needs.
+      setSubmitError(
+        error instanceof Error ? error.message : 'Could not add the vehicle',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    assignNow,
+    capacity,
+    driverId,
+    make,
+    model,
+    navigation,
+    registration,
+    type,
+    year,
+  ]);
 
   const applyUpload = useCallback(
     (name: string) => {
@@ -161,6 +296,7 @@ export const AddVehicleScreen: React.FC = () => {
             autoCapitalize="characters"
             marginBottom={10}
             inputStyle={styles.regInput}
+            error={errors.registration}
           />
 
           <Select
@@ -171,46 +307,55 @@ export const AddVehicleScreen: React.FC = () => {
             onChange={setType}
             placeholder="Select vehicle type"
             marginBottom={10}
+            error={errors.type}
           />
 
           <View style={styles.row}>
             <View style={styles.col}>
               <Input
                 label="Capacity (Ton)"
+                required
                 value={capacity}
                 onChangeText={setCapacity}
                 placeholder="7"
                 keyboardType="decimal-pad"
                 marginBottom={10}
+                error={errors.capacity}
               />
             </View>
             <View style={styles.col}>
               <Input
                 label="Year"
+                required
                 value={year}
                 onChangeText={setYear}
                 placeholder="2022"
                 keyboardType="number-pad"
                 maxLength={4}
                 marginBottom={10}
+                error={errors.year}
               />
             </View>
           </View>
 
           <Select
             label="Make / Manufacturer"
+            required
             options={MAKES}
             value={make}
             onChange={setMake}
             marginBottom={10}
+            error={errors.make}
           />
 
           <Input
             label="Model"
+            required
             value={model}
             onChangeText={setModel}
             placeholder="e.g. LPT 1109"
             marginBottom={0}
+            error={errors.model}
           />
         </Card>
 
@@ -311,15 +456,42 @@ export const AddVehicleScreen: React.FC = () => {
             accessibilityLabel="Assign driver now"
           />
         </Card>
+
+        {assignNow ? (
+          <Card padding={12} marginBottom={0} style={styles.assignPicker}>
+            <Select
+              label="Driver"
+              required
+              options={driverOptions}
+              value={driverId}
+              onChange={setDriverId}
+              placeholder={
+                driverOptions.length > 0
+                  ? 'Select a driver'
+                  : 'No unassigned drivers available'
+              }
+              marginBottom={0}
+              error={errors.driverId}
+            />
+          </Card>
+        ) : null}
+
+        {submitError ? (
+          <Card padding={11} marginBottom={0} style={styles.errorCard}>
+            <Icon name="alert-circle" size={14} color={palette.red} />
+            <Text style={styles.errorText}>{submitError}</Text>
+          </Card>
+        ) : null}
       </Content>
 
       <Footer>
         <Button
-          label="Add to Fleet"
+          label={saving ? 'Adding…' : 'Add to Fleet'}
           variant="gold"
           icon="check-circle-2"
           padding={12}
           fontSize={13}
+          loading={saving}
           onPress={addToFleet}
         />
       </Footer>
@@ -376,6 +548,18 @@ const styles = StyleSheet.create({
   slotBadge: { position: 'absolute', top: s(8), right: s(8) },
 
   assignRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
+  assignPicker: { marginTop: s(8) },
+  errorCard: {
+    marginTop: s(10),
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: s(8),
+    backgroundColor: palette.redTint,
+  },
+  errorText: {
+    flex: 1,
+    ...font(10, '700', { color: palette.red }),
+  },
   assignBody: { flex: 1 },
   assignTitle: font(11, '800', { color: palette.navy }),
   assignMeta: {

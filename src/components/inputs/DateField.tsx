@@ -4,6 +4,7 @@ import type { StyleProp, ViewStyle } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { Icon } from '@components/common/Icon';
+import { FieldError } from './Input';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -30,6 +31,8 @@ export type DateFieldProps = {
   minimumDate?: Date;
   maximumDate?: Date;
   style?: StyleProp<ViewStyle>;
+  /** Why this field was rejected, shown beneath it in red. */
+  error?: string;
 };
 
 const toIso = (d: Date): string => d.toISOString().split('T')[0];
@@ -44,6 +47,7 @@ const DateFieldComponent: React.FC<DateFieldProps> = ({
   minimumDate,
   maximumDate,
   style,
+  error,
 }) => {
   const [open, setOpen] = useState(false);
 
@@ -73,18 +77,27 @@ const DateFieldComponent: React.FC<DateFieldProps> = ({
       <Pressable
         onPress={() => setOpen(true)}
         accessibilityRole="button"
-        accessibilityLabel={
+        accessibilityLabel={[
           value
             ? `${label ?? 'Date'} ${value}. Change`
-            : `Choose ${label ?? 'date'}`
-        }
-        style={({ pressed }) => [styles.field, pressed && styles.pressed]}
+            : `Choose ${label ?? 'date'}`,
+          error,
+        ]
+          .filter(Boolean)
+          .join(', ')}
+        style={({ pressed }) => [
+          styles.field,
+          error && styles.fieldInvalid,
+          pressed && styles.pressed,
+        ]}
       >
         <Text style={value ? styles.value : styles.placeholder}>
           {value || placeholder}
         </Text>
         <Icon name="calendar-days" size={13} color={palette.slate400} />
       </Pressable>
+
+      <FieldError>{error}</FieldError>
 
       {open ? (
         <DateTimePicker
@@ -117,6 +130,9 @@ const styles = StyleSheet.create({
     borderWidth: s(1.5),
     borderColor: palette.gray200,
     borderRadius: radius.md,
+  },
+  fieldInvalid: {
+    borderColor: palette.red,
   },
   pressed: { opacity: 0.8 },
   value: font(11, '700', { color: palette.navy }),

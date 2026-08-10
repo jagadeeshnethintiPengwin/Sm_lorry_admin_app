@@ -17,7 +17,9 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
-import type { AuthStackParamList } from '@navigation/types';
+import { authService } from '@services/auth.service';
+import { session } from '@services/storage';
+import type { AuthStackParamList, RootStackParamList } from '@navigation/types';
 
 /**
  * Screen 1 — Splash.
@@ -35,14 +37,56 @@ const HOLD_AFTER_FILL = 1000;
 export const SplashScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
+  // `Tabs` belongs to the root navigator; this screen sits in the Auth stack
+  // nested inside it, so resuming has to be addressed one level up.
+  const rootNavigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * Whether the stored session still works — settled while the bar fills.
+   *
+   * A token in storage is not proof of anything on its own. It can be expired,
+   * or revoked by a logout on another device, which the opaque tokens the API
+   * now issues make possible at any time. Walking an owner into a dashboard on
+   * a dead token is worse than asking them to sign in: every panel would load
+   * empty and the reason would be invisible.
+   *
+   * So the check runs against the server, and it runs *in parallel* with the
+   * splash animation rather than after it — the request costs no extra waiting,
+   * because the bar has to fill anyway.
+   */
+  const resumable = useRef<Promise<boolean> | null>(null);
+  if (resumable.current === null) {
+    resumable.current = (async () => {
+      // Synchronous, thanks to MMKV: no session, no request.
+      if (!session.hasSession()) {
+        return false;
+      }
+      try {
+        await authService.getProfile();
+        return true;
+      } catch {
+        // Expired, revoked, or the account is gone. Clear it so the next
+        // launch does not retry a token already known to be dead.
+        session.clear();
+        return false;
+      }
+    })();
+  }
+
   const handleProgressComplete = useCallback(() => {
-    holdTimer.current = setTimeout(
-      () => navigation.replace('Login'),
-      HOLD_AFTER_FILL,
-    );
-  }, [navigation]);
+    holdTimer.current = setTimeout(async () => {
+      const canResume = await resumable.current;
+      if (canResume) {
+        // `reset`, not `replace` — the sign-in stack must not stay behind the
+        // dashboard for the back gesture to reach.
+        rootNavigation.reset({ index: 0, routes: [{ name: 'Tabs' }] });
+      } else {
+        navigation.replace('Login');
+      }
+    }, HOLD_AFTER_FILL);
+  }, [navigation, rootNavigation]);
 
   useEffect(
     () => () => {

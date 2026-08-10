@@ -9,7 +9,8 @@
     "start": "node scripts/reverse.mjs && react-native start --port 8084",
     "test": "jest",
     "reverse": "node scripts/reverse.mjs",
-    "start:fresh": "node scripts/reverse.mjs && react-native start --port 8084 --reset-cache"
+    "start:fresh": "node scripts/reverse.mjs && react-native start --port 8084 --reset-cache",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",
@@ -27,6 +28,8 @@
     "react-native-gesture-handler": "^3.1.0",
     "react-native-linear-gradient": "^2.8.3",
     "react-native-maps": "^1.29.0",
+    "react-native-mmkv": "^4.3.2",
+    "react-native-nitro-modules": "^0.36.5",
     "react-native-reanimated": "4.6.0-nightly-20260807-fb68ce75c",
     "react-native-responsive-screen": "^1.4.2",
     "react-native-safe-area-context": "^5.5.2",

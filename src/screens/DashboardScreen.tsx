@@ -1,7 +1,7 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
@@ -15,6 +15,8 @@ import {
   TwinkleDot,
 } from '@components/index';
 import { useTopInset } from '@hooks/useTopInset';
+import { reportService } from '@services/report.service';
+import type { DashboardSummary, TripsPerDay } from '@services/report.service';
 import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -44,40 +46,53 @@ type Stat = {
   color: string;
 };
 
-const STATS: Stat[] = [
-  {
-    label: 'FLEET',
-    value: '42',
-    note: '+3 this month',
-    icon: 'truck',
-    bg: palette.navyTint,
-    color: palette.navy,
-  },
-  {
-    label: 'DRIVERS',
-    value: '38',
-    note: '32 online now',
-    icon: 'user-cog',
-    bg: palette.goldTint,
-    color: palette.gold,
-  },
-  {
-    label: 'CUSTOMERS',
-    value: '124',
-    note: '+8 this mo',
-    icon: 'users',
-    bg: palette.redTint,
-    color: palette.red,
-  },
-  {
-    label: 'DELIVERED',
-    value: '1,284',
-    note: '98% on-time',
-    icon: 'check-circle-2',
-    bg: palette.navyTint,
-    color: palette.navy,
-  },
-];
+/**
+ * The four stat cells, built from `GET /reports/dashboard`.
+ *
+ * These were literals — 42 vehicles, 38 drivers, 124 customers, 1,284
+ * delivered, with notes like "+3 this month" and "98% on-time". They came from
+ * the design mock, so every owner saw the same fleet whatever they actually
+ * owned, and nothing ever moved. The notes that cannot be derived from the
+ * summary are gone rather than invented: a made-up "98% on-time" under a real
+ * delivered count is worse than no note at all.
+ */
+function statsOf(summary: DashboardSummary | null): Stat[] {
+  const show = (n?: number) => (n === undefined ? '—' : n.toLocaleString('en-IN'));
+  return [
+    {
+      label: 'FLEET',
+      value: show(summary?.totalVehicles),
+      note: summary ? `${summary.fleet.available} available now` : '',
+      icon: 'truck',
+      bg: palette.navyTint,
+      color: palette.navy,
+    },
+    {
+      label: 'DRIVERS',
+      value: show(summary?.totalDrivers),
+      note: summary ? `${summary.drivers.online} online now` : '',
+      icon: 'user-cog',
+      bg: palette.goldTint,
+      color: palette.gold,
+    },
+    {
+      label: 'CUSTOMERS',
+      value: show(summary?.totalCustomers),
+      note: '',
+      icon: 'users',
+      bg: palette.redTint,
+      color: palette.red,
+    },
+    {
+      label: 'DELIVERED',
+      value: show(summary?.completedTrips),
+      note: summary ? `${summary.activeTrips} running now` : '',
+      icon: 'check-circle-2',
+      bg: palette.navyTint,
+      color: palette.navy,
+    },
+  ];
+}
 
 type QuickAction = {
   lines: [string, string];
@@ -118,21 +133,77 @@ const QUICK_ACTIONS: QuickAction[] = [
   },
 ];
 
-/** `height:%` on each bar; the last one is navy (today). */
-const WEEK = [
-  { day: 'M', height: 55, today: false },
-  { day: 'T', height: 70, today: false },
-  { day: 'W', height: 50, today: false },
-  { day: 'T', height: 85, today: false },
-  { day: 'F', height: 65, today: false },
-  { day: 'S', height: 100, today: false },
-  { day: 'S', height: 75, today: true },
-];
+const DAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+/**
+ * The THIS WEEK bars, scaled from `GET /reports/trips-per-day`.
+ *
+ * The heights were seven fixed percentages, so the chart drew the same shape
+ * for ever — a busy Saturday every week regardless of what was delivered.
+ * Heights are now relative to the busiest day in the range, which is what makes
+ * a bar chart readable; a week with no trips draws flat rather than pretending.
+ */
+function weekOf(series: TripsPerDay[]): Array<{
+  day: string;
+  height: number;
+  today: boolean;
+}> {
+  const today = new Date().toISOString().slice(0, 10);
+  const peak = Math.max(1, ...series.map(d => d.completed + d.active));
+
+  return series.map(day => {
+    const total = day.completed + day.active;
+    return {
+      day: DAY_INITIALS[new Date(day.date).getDay()] ?? '',
+      // A day with work always shows something; only a genuine zero is flat.
+      height: total ? Math.max(8, Math.round((total / peak) * 100)) : 0,
+      today: day.date === today,
+    };
+  });
+}
 
 export const DashboardScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const topInset = useTopInset();
+
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [series, setSeries] = useState<TripsPerDay[]>([]);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  /**
+   * Re-read on every visit.
+   *
+   * A dashboard is the one screen where stale numbers are actively misleading —
+   * an owner glances at it to decide something. `useFocusEffect` rather than a
+   * mount-only effect, so coming back from approving a booking shows the new
+   * pending count rather than the one from when the app started.
+   */
+  const load = useCallback(async () => {
+    setFailure(null);
+    try {
+      const [counts, perDay] = await Promise.all([
+        reportService.dashboard(),
+        reportService.tripsPerDay(),
+      ]);
+      setSummary(counts);
+      setSeries(perDay);
+    } catch (error) {
+      setFailure(
+        (error as Error).message ||
+          'Could not reach the server. Pull down to try again.',
+      );
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
+
+  const stats = useMemo(() => statsOf(summary), [summary]);
+  const week = useMemo(() => weekOf(series), [series]);
 
   const openNotifications = useCallback(
     () => navigation.navigate('Notifications'),
@@ -176,7 +247,7 @@ export const DashboardScreen: React.FC = () => {
         locations={[0, 0.55, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={[styles.header, { paddingTop: topInset + s(8) }]}
+        style={[styles.header, { paddingTop: topInset + s(2) }]}
       >
         <RadialGlow
           size={180}
@@ -221,6 +292,26 @@ export const DashboardScreen: React.FC = () => {
       </LinearGradient>
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
+        {/*
+          * Say when the numbers could not be fetched.
+          *
+          * Every figure below falls back to an em dash, which on its own reads
+          * as "nothing today" rather than "could not ask" — an owner would take
+          * an idle fleet at face value.
+          */}
+        {failure ? (
+          <Pressable
+            onPress={load}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading the dashboard"
+            style={styles.failure}
+          >
+            <Icon name="alert-circle" size={14} color={palette.red} />
+            <Text style={styles.failureText}>{failure}</Text>
+            <Text style={styles.failureRetry}>Retry</Text>
+          </Pressable>
+        ) : null}
+
         {/* Fleet status live card */}
         <View style={styles.fleetCard}>
           <View style={styles.fleetHead}>
@@ -231,25 +322,33 @@ export const DashboardScreen: React.FC = () => {
             </View>
           </View>
 
+          {/* Was 18 / 14 / 32, fixed. A card headed "LIVE" is the last place
+              that should be showing constants. */}
           <View style={styles.fleetStats}>
             <View style={[styles.fleetStat, styles.fleetStatDivider]}>
               <View style={styles.fleetValueRow}>
                 <Icon name="activity" size={12} color={palette.gold} />
-                <Text style={styles.fleetValue}>18</Text>
+                <Text style={styles.fleetValue}>
+                  {summary?.fleet.inTrip ?? '—'}
+                </Text>
               </View>
               <Text style={styles.fleetStatLabel}>ACTIVE</Text>
             </View>
             <View style={[styles.fleetStat, styles.fleetStatDivider]}>
               <View style={styles.fleetValueRow}>
                 <Icon name="parking-circle" size={12} color={palette.navy} />
-                <Text style={styles.fleetValue}>14</Text>
+                <Text style={styles.fleetValue}>
+                  {summary?.fleet.available ?? '—'}
+                </Text>
               </View>
               <Text style={styles.fleetStatLabel}>AVAILABLE</Text>
             </View>
             <View style={styles.fleetStat}>
               <View style={styles.fleetValueRow}>
                 <Icon name="truck" size={12} color={palette.gold} />
-                <Text style={styles.fleetValue}>32</Text>
+                <Text style={styles.fleetValue}>
+                  {summary?.totalVehicles ?? '—'}
+                </Text>
               </View>
               <Text style={styles.fleetStatLabel}>TOTAL</Text>
             </View>
@@ -260,7 +359,7 @@ export const DashboardScreen: React.FC = () => {
         <Pressable
           onPress={openBookings}
           accessibilityRole="button"
-          accessibilityLabel="7 bookings awaiting approval"
+          accessibilityLabel={`${summary?.pendingBookings ?? 0} bookings awaiting approval`}
           style={({ pressed }) => [pressed && styles.pressed]}
         >
           <LinearGradient
@@ -280,7 +379,9 @@ export const DashboardScreen: React.FC = () => {
               </View>
 
               <View style={styles.ctaBody}>
-                <Text style={styles.ctaTitle}>7 bookings awaiting approval</Text>
+                <Text style={styles.ctaTitle}>
+                  {summary?.pendingBookings ?? 0} bookings awaiting approval
+                </Text>
                 <Text style={styles.ctaMeta}>
                   Tap to review &amp; dispatch drivers
                 </Text>
@@ -293,7 +394,7 @@ export const DashboardScreen: React.FC = () => {
 
         {/* 4-cell stats */}
         <View style={styles.grid}>
-          {STATS.map(stat => (
+          {stats.map(stat => (
             <Card key={stat.label} padding={11} marginBottom={0} style={styles.gridCell}>
               <View style={styles.statHead}>
                 <View style={[styles.statTile, { backgroundColor: stat.bg }]}>
@@ -309,7 +410,9 @@ export const DashboardScreen: React.FC = () => {
 
         {/* Active trip */}
         <View style={styles.sectionRow}>
-          <Text style={styles.sectionLabel}>ACTIVE TRIPS · 18</Text>
+          <Text style={styles.sectionLabel}>
+            ACTIVE TRIPS · {summary?.activeTrips ?? 0}
+          </Text>
           <Pressable
             onPress={openTrips}
             accessibilityRole="button"
@@ -417,7 +520,7 @@ export const DashboardScreen: React.FC = () => {
           </View>
 
           <View style={styles.chart}>
-            {WEEK.map((bar, index) => (
+            {week.map((bar, index) => (
               <LinearGradient
                 key={`${bar.day}-${index}`}
                 colors={
@@ -433,7 +536,7 @@ export const DashboardScreen: React.FC = () => {
           </View>
 
           <View style={styles.chartAxis}>
-            {WEEK.map((bar, index) => (
+            {week.map((bar, index) => (
               <Text key={`${bar.day}-label-${index}`} style={styles.axisText}>
                 {bar.day}
               </Text>
@@ -446,9 +549,19 @@ export const DashboardScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  /*
+   * Was `paddingBottom: 32` under a `paddingTop` of `topInset + 8`.
+   *
+   * The header holds one row — avatar, greeting, bell — and the fleet card is
+   * pulled up into it, so most of that 32 was navy nobody saw: it sat behind
+   * the card. Trimming it to 20 takes real height off the top of the screen
+   * without touching the overlap, which is the part the design is actually
+   * doing. `paddingTop` comes down with it, inline, so the row is not left
+   * hanging low in a shorter band.
+   */
   header: {
     paddingHorizontal: s(14),
-    paddingBottom: s(32),
+    paddingBottom: s(12),
     overflow: 'hidden',
   },
   headerTwinkle: { position: 'absolute', top: s(56), right: s(120) },
@@ -458,20 +571,22 @@ const styles = StyleSheet.create({
     gap: s(12),
     width: '100%',
   },
-  avatarWrap: { width: s(48), height: s(48), alignItems: 'center', justifyContent: 'center' },
+  // 40/36, down from 48/44: the avatar is the tallest thing in the header row,
+  // so the band cannot get shorter than it however the padding is trimmed.
+  avatarWrap: { width: s(40), height: s(40), alignItems: 'center', justifyContent: 'center' },
   avatarRing: {
     ...StyleSheet.absoluteFill,
     borderRadius: radius.full,
   },
   avatar: {
-    width: s(44),
-    height: s(44),
+    width: s(36),
+    height: s(36),
     borderRadius: radius.full,
     backgroundColor: palette.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: font(14, '800', { color: palette.navy }),
+  avatarText: font(12, '800', { color: palette.navy }),
   greetBlock: { flex: 1, minWidth: 0 },
   greetSmall: { ...font(9, '700', { color: palette.white }), opacity: 0.7 },
   greetName: font(14, '800', { color: palette.white, lineHeight: 1.15 }),
@@ -506,10 +621,22 @@ const styles = StyleSheet.create({
   bellBadgeText: font(8, '800', { color: palette.white }),
 
   /** `.content { margin-top:-24px; padding-top:0 }`. */
+  failure: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(8),
+    padding: s(10),
+    marginBottom: s(10),
+    borderRadius: radius.md,
+    backgroundColor: palette.redTint },
+  failureText: {
+    ...font(9, '700', { lineHeight: 1.3, color: palette.red }),
+    flex: 1 },
+  failureRetry: font(9, '800', { color: palette.navy }),
   contentTop: { paddingTop: 0 },
 
   fleetCard: {
-    marginTop: s(-24),
+    marginTop: s(-10),
     backgroundColor: palette.white,
     borderRadius: radius.xxl,
     padding: s(12),

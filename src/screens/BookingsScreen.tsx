@@ -1,7 +1,13 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
@@ -12,6 +18,8 @@ import {
   RouteView,
   Screen,
 } from '@components/index';
+import { bookingService } from '@services/fleet.service';
+import type { AdminBooking } from '@services/fleet.service';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -45,63 +53,199 @@ type BookingRow = {
   actions?: boolean;
 };
 
-const BOOKINGS: BookingRow[] = [
-  {
-    id: 'b1',
-    reference: '#ST-2026-8842',
-    customer: 'Sri Sai Traders · Rajesh K',
-    initials: 'SS',
-    tileBg: palette.navyTint,
-    tileColor: palette.navy,
-    pickup: 'Kompally, Hyderabad',
-    drop: 'Vijayawada',
-    meta: '14 Ft · 278 km · Today 4 PM',
-    age: '2 min ago',
-    status: 'pending',
-    actions: true,
-  },
-  {
-    id: 'b2',
-    reference: '#ST-2026-8841',
-    customer: 'Krishna Industries · Suresh M',
-    initials: 'KI',
-    tileBg: palette.goldTint,
-    tileColor: palette.gold,
-    pickup: 'Vizag Port',
-    drop: 'Uppal Depot',
-    meta: '17 Ft · 620 km · Tomorrow 6 AM',
-    age: '18 min ago',
-    status: 'pending',
-  },
-  {
-    id: 'b3',
-    reference: '#ST-2026-8840',
-    customer: 'Anand Logistics · Anand P',
-    initials: 'AL',
-    tileBg: palette.redTint,
-    tileColor: palette.red,
-    pickup: 'Guntur',
-    drop: 'Chennai',
-    meta: '22 Ft Trailer · Day after · 6 AM',
-    age: '32 min ago',
-    status: 'pending',
-  },
+/** Counts come from the rows now, so a tab is just its key and label. */
+const TABS: Array<[Tab, string]> = [
+  ['pending', 'Pending'],
+  ['approved', 'Approved'],
+  ['rejected', 'Rejected'],
 ];
 
-const TABS: Array<[Tab, string, string]> = [
-  ['pending', 'Pending', '7'],
-  ['approved', 'Approved', '12'],
-  ['rejected', 'Rejected', '3'],
+/**
+ * The tab a booking belongs to, from the status the API sends.
+ *
+ * All five `BookingStatus` values are here on purpose. A booking that reaches
+ * `COMPLETED` was approved and then delivered, so it stays under Approved —
+ * and `CANCELLED` sits with Rejected, both being ways a booking ends without a
+ * trip running. Anything not listed is not guessed at: an unrecognised status
+ * is dropped rather than falling into Pending, which would have put five
+ * completed bookings in the owner's approval queue.
+ */
+const TAB_FOR: Record<string, Tab | undefined> = {
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  COMPLETED: 'approved',
+  REJECTED: 'rejected',
+  CANCELLED: 'rejected',
+};
+
+/** The tile accent cycles, so a list of rows is scannable. */
+const TILE = [
+  { tileBg: palette.navyTint, tileColor: palette.navy },
+  { tileBg: palette.goldTint, tileColor: palette.gold },
+  { tileBg: palette.redTint, tileColor: palette.red },
 ];
+
+const initialsOf = (name: string) =>
+  name
+    .trim()
+    .split(/\s+/)
+    .map(part => part[0] ?? '')
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+
+/** `2 min ago` / `18 min ago` / `3 days ago`. */
+function ageOf(iso?: string): string {
+  if (!iso) {
+    return '';
+  }
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function whenOf(iso?: string): string {
+  if (!iso) {
+    return '';
+  }
+  return new Date(iso).toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+/**
+ * One API booking, as this list draws it.
+ *
+ * The screen carried three literal rows — Sri Sai Traders, Krishna Industries,
+ * Anand Logistics — and tab counts of 7/12/3. So the panel showed the same
+ * three bookings to every owner, the counts never agreed with them, and the
+ * approve and reject buttons acted on ids that did not exist.
+ */
+function toRow(
+  booking: AdminBooking,
+  index: number,
+  newestPendingId: string | null,
+  status: Tab,
+): BookingRow {
+  const company = String(booking.customer?.company ?? 'Customer');
+  const contact = booking.customer?.contactName;
+
+  return {
+    id: booking.id,
+    reference: `#${booking.reference ?? ''}`,
+    customer: [company, contact].filter(Boolean).join(' · '),
+    initials: initialsOf(company),
+    ...TILE[index % TILE.length],
+    pickup: String(booking.pickupPlace ?? '—'),
+    drop: String(booking.dropPlace ?? '—'),
+    meta: [
+      booking.vehicleType,
+      booking.distanceKm ? `${booking.distanceKm} km` : null,
+      whenOf(booking.pickupAt as string | undefined),
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    age: ageOf(booking.createdAt as string | undefined),
+    status,
+    // Inline approve/reject on the newest pending one, as the design has it.
+    actions: booking.id === newestPendingId,
+  };
+}
 
 export const BookingsScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('pending');
+  const [bookings, setBookings] = useState<AdminBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  /**
+   * Every booking, once, then split into tabs here.
+   *
+   * The API can filter by status, but the tab counts have to be right whichever
+   * tab is showing — fetching per tab would leave the other two counts guessing,
+   * which is how the hardcoded 7/12/3 came to disagree with the rows underneath
+   * them.
+   */
+  const load = useCallback(async () => {
+    setFailure(null);
+    try {
+      setBookings(await bookingService.list({ limit: 100 }));
+    } catch (error) {
+      setFailure((error as Error).message || 'Could not load bookings.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
+
+  const rows = useMemo(() => {
+    // Paired with its tab up front, so a status the app does not recognise is
+    // left out rather than landed in whichever bucket happened to be default.
+    const known = bookings
+      .map(booking => ({ booking, tab: TAB_FOR[String(booking.status)] }))
+      .filter((entry): entry is { booking: AdminBooking; tab: Tab } =>
+        Boolean(entry.tab),
+      );
+
+    const newestPendingId =
+      known.find(entry => entry.tab === 'pending')?.booking.id ?? null;
+
+    return known.map((entry, index) =>
+      toRow(entry.booking, index, newestPendingId, entry.tab),
+    );
+  }, [bookings]);
+
+  const counts = useMemo(
+    () => ({
+      pending: rows.filter(r => r.status === 'pending').length,
+      approved: rows.filter(r => r.status === 'approved').length,
+      rejected: rows.filter(r => r.status === 'rejected').length,
+    }),
+    [rows],
+  );
 
   const visible = useMemo(
-    () => BOOKINGS.filter(booking => booking.status === tab),
-    [tab],
+    () => rows.filter(booking => booking.status === tab),
+    [rows, tab],
+  );
+
+  /** Approve or reject, then re-read so the tabs and counts follow. */
+  const decide = useCallback(
+    (id: string, approve: boolean) => async () => {
+      setBusyId(id);
+      setFailure(null);
+      try {
+        if (approve) {
+          await bookingService.approve(id);
+        } else {
+          await bookingService.reject(id, 'Rejected from the panel');
+        }
+        await load();
+      } catch (error) {
+        setFailure(
+          (error as Error).message ||
+            `Could not ${approve ? 'approve' : 'reject'} the booking.`,
+        );
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
   );
 
   const review = useCallback(
@@ -113,14 +257,15 @@ export const BookingsScreen: React.FC = () => {
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Bookings"
-        subtitle="7 pending · 142 total"
+        subtitle={`${counts.pending} pending · ${rows.length} total`}
         showBack
         onBackPress={navigation.goBack}
       />
 
       {/* Status tabs */}
       <View style={styles.tabs}>
-        {TABS.map(([key, label, count]) => {
+        {TABS.map(([key, label]) => {
+          const count = counts[key];
           const on = tab === key;
           return (
             <Pressable
@@ -143,6 +288,35 @@ export const BookingsScreen: React.FC = () => {
       </View>
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
+        {/*
+          * A failed fetch and an empty tab used to look identical, because both
+          * were impossible — the list was a constant. Now that it is real, they
+          * need telling apart.
+          */}
+        {failure ? (
+          <Pressable onPress={load} accessibilityRole="button" style={styles.state}>
+            <Icon name="alert-circle" size={16} color={palette.red} />
+            <Text style={styles.stateTitle}>Could not load bookings</Text>
+            <Text style={styles.stateBody}>{failure}</Text>
+            <Text style={styles.stateAction}>Tap to try again</Text>
+          </Pressable>
+        ) : loading && !rows.length ? (
+          <View style={styles.state}>
+            <ActivityIndicator color={palette.navy} />
+            <Text style={styles.stateBody}>Loading bookings…</Text>
+          </View>
+        ) : !visible.length ? (
+          <View style={styles.state}>
+            <Icon name="clipboard-list" size={18} color={palette.slate400} />
+            <Text style={styles.stateTitle}>Nothing {tab}</Text>
+            <Text style={styles.stateBody}>
+              {tab === 'pending'
+                ? 'New bookings from customers land here for approval.'
+                : `Bookings you have ${tab} will be listed here.`}
+            </Text>
+          </View>
+        ) : null}
+
         {visible.map(booking => (
           <Pressable
             key={booking.id}
@@ -162,7 +336,9 @@ export const BookingsScreen: React.FC = () => {
                 <Text style={styles.reference}>{booking.reference}</Text>
                 <View style={styles.pill}>
                   <BlinkDot color={palette.gold} size={4} />
-                  <Text style={styles.pillText}>PENDING</Text>
+                  <Text style={styles.pillText}>
+                    {booking.status.toUpperCase()}
+                  </Text>
                 </View>
               </View>
 
@@ -190,16 +366,23 @@ export const BookingsScreen: React.FC = () => {
 
               {booking.actions ? (
                 <View style={styles.actions}>
+                  {/* Reject had no `onPress` at all — it looked like a control
+                      and did nothing. It now calls the API and re-reads, so
+                      the row moves to the Rejected tab. */}
                   <Pressable
+                    onPress={decide(booking.id, false)}
+                    disabled={busyId === booking.id}
                     accessibilityRole="button"
                     accessibilityLabel={`Reject ${booking.reference}`}
                     style={({ pressed }) => [
                       styles.reject,
-                      pressed && styles.pressed,
+                      (pressed || busyId === booking.id) && styles.pressed,
                     ]}
                   >
                     <Icon name="x" size={12} color={palette.red} />
-                    <Text style={styles.rejectText}>Reject</Text>
+                    <Text style={styles.rejectText}>
+                      {busyId === booking.id ? 'Working…' : 'Reject'}
+                    </Text>
                   </Pressable>
 
                   <Pressable
@@ -232,6 +415,12 @@ export const BookingsScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  state: { alignItems: 'center', gap: s(6), paddingVertical: s(24) },
+  stateTitle: font(11, '800', { color: palette.navy }),
+  stateBody: {
+    ...font(9, '600', { lineHeight: 1.35, color: palette.slate500 }),
+    textAlign: 'center' },
+  stateAction: font(9, '800', { color: palette.navy }),
   tabs: {
     flexDirection: 'row',
     backgroundColor: palette.navyTint,

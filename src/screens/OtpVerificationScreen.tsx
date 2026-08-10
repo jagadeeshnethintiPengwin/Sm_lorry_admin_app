@@ -33,8 +33,15 @@ import type { AuthStackParamList, RootStackParamList } from '@navigation/types';
 const CODE_LENGTH = 6;
 const RESEND_SECONDS = 32;
 
-/** The mock ships `9 2 4 8` pre-filled with two boxes still empty. */
-const INITIAL_CODE = ['9', '2', '4', '8', '', ''];
+/**
+ * Empty, every box.
+ *
+ * The design mock drew `9 2 4 8` typed in to illustrate the filled state, and
+ * that literal was left in as the initial value — so the screen opened with
+ * four digits of somebody's example code already entered. Two taps then
+ * submitted a code the owner never received and never chose.
+ */
+const INITIAL_CODE = ['', '', '', '', '', ''];
 
 export const OtpVerificationScreen: React.FC = () => {
   const topInset = useTopInset();
@@ -47,6 +54,8 @@ export const OtpVerificationScreen: React.FC = () => {
 
   const [code, setCode] = useState<string[]>(INITIAL_CODE);
   const [seconds, setSeconds] = useState(RESEND_SECONDS);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   // `TextInputInstance`, not `TextInput`: as of React Native 0.87 the name
   // `TextInput` used in type position is the component, not what a ref to one
   // holds, so it no longer carries `focus`/`blur`.
@@ -83,16 +92,70 @@ export const OtpVerificationScreen: React.FC = () => {
 
   const complete = useMemo(() => code.every(digit => digit !== ''), [code]);
 
-  const verify = useCallback(() => {
-    dispatch(
-      verifyOtp({
-        mobile: route.params.mobile,
-        code: code.join(''),
-        verificationId: 'mock-verification',
-      }),
-    );
-    navigation.replace('Tabs', { screen: 'Home' });
-  }, [code, dispatch, navigation, route.params.mobile]);
+  /**
+   * Checks the code, and only signs in if the API agrees.
+   *
+   * This dispatched and then navigated on the next line, without awaiting
+   * either — so any six digits opened the dashboard. The panel looked signed
+   * in while holding no token, and the first real request would 401. It also
+   * posted the literal `'mock-verification'` as the challenge id, so even a
+   * correct code was being checked against nothing.
+   */
+  const verify = useCallback(async () => {
+    if (!complete || busy) {
+      return;
+    }
+    setBusy(true);
+    setFailure(null);
+    try {
+      const entered = code.join('');
+
+      /*
+       * A reset does not verify here.
+       *
+       * Forgot PIN sends the operator through this same screen, but the code
+       * has to be spent by `pin/reset` together with the new PIN — verifying
+       * it now would consume the challenge and leave the reset holding a code
+       * the API has already marked used. So the digits are carried forward and
+       * checked once, at the point they actually buy something.
+       */
+      if (route.params.intent === 'reset-pin') {
+        navigation.replace('ResetPin', {
+          mobile: route.params.mobile,
+          verificationId: route.params.verificationId,
+          code: entered,
+        });
+        return;
+      }
+
+      await dispatch(
+        verifyOtp({
+          mobile: route.params.mobile,
+          code: entered,
+          verificationId: route.params.verificationId,
+        }),
+      ).unwrap();
+      navigation.replace('Tabs', { screen: 'Home' });
+    } catch (error) {
+      setFailure(
+        (error as Error)?.message ||
+          'That code was not accepted. Check it and try again.',
+      );
+      setCode(INITIAL_CODE);
+      inputs.current[0]?.focus();
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    busy,
+    code,
+    complete,
+    dispatch,
+    navigation,
+    route.params.intent,
+    route.params.mobile,
+    route.params.verificationId,
+  ]);
 
   return (
     <Screen backgroundColor={palette.navy}>
@@ -144,11 +207,19 @@ export const OtpVerificationScreen: React.FC = () => {
         </View>
 
         <View style={styles.actions}>
+          {failure ? (
+            <View style={styles.failure} accessibilityLiveRegion="polite">
+              <Icon name="alert-circle" size={12} color={palette.red} />
+              <Text style={styles.failureText}>{failure}</Text>
+            </View>
+          ) : null}
+
           <Button
-            label="Verify & Continue"
+            label={busy ? 'Verifying…' : 'Verify & Continue'}
             variant="gold"
             icon="check"
-            disabled={!complete}
+            loading={busy}
+            disabled={!complete || busy}
             onPress={verify}
           />
 
@@ -189,6 +260,14 @@ export const OtpVerificationScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   field: { flex: 1 },
+  failure: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(6),
+    marginBottom: s(10) },
+  failureText: {
+    ...font(9, '700', { lineHeight: 1.3, color: palette.red }),
+    flex: 1 },
   // paddingTop is applied inline from useTopInset — the navy field runs
   // under the translucent status bar, so the logo needs the inset plus a
   // little breathing room above it.

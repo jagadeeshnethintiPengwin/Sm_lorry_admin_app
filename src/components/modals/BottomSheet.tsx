@@ -1,8 +1,8 @@
 import React, { memo } from 'react';
 import { Modal, Pressable, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 
+import { useSheetBottom } from '@hooks/useSafeBottom';
 import { palette } from '@theme/colors';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
@@ -50,7 +50,10 @@ const BottomSheetComponent: React.FC<BottomSheetProps> = ({
   paddingBottom = 16,
   style,
 }) => {
-  const insets = useSafeAreaInsets();
+  // Capped rather than raw: this modal covers the system bars, and the inset
+  // reported for such a window overstates the navigation bar on some handsets,
+  // which shows up as a dead band beneath the sheet's last row.
+  const sheet = useSheetBottom();
 
   return (
     <Modal
@@ -67,7 +70,7 @@ const BottomSheetComponent: React.FC<BottomSheetProps> = ({
       <Animated.View
         entering={FadeIn.duration(200)}
         exiting={FadeOut.duration(160)}
-        style={styles.scrim}
+        style={[styles.scrim, { height: sheet.height }]}
       >
         <Pressable
           style={StyleSheet.absoluteFill}
@@ -86,10 +89,10 @@ const BottomSheetComponent: React.FC<BottomSheetProps> = ({
               paddingTop: s(paddingTop),
               paddingBottom: floating
                 ? s(paddingBottom)
-                : s(paddingBottom) + insets.bottom,
+                : s(paddingBottom) + sheet.paddingBottom,
             },
             floating
-              ? { marginBottom: insets.bottom + s(12) }
+              ? { marginBottom: sheet.paddingBottom + s(12) }
               : null,
             style,
           ]}
