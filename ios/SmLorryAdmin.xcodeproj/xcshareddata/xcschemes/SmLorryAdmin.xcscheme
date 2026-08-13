@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-               BuildableName = "Sm_Lorry_admin.app"
-               BlueprintName = "Sm_Lorry_admin"
-               ReferencedContainer = "container:Sm_Lorry_admin.xcodeproj">
+               BuildableName = "SmLorryAdmin.app"
+               BlueprintName = "SmLorryAdmin"
+               ReferencedContainer = "container:SmLorryAdmin.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -33,9 +33,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "00E356ED1AD99517003FC87E"
-               BuildableName = "Sm_Lorry_adminTests.xctest"
-               BlueprintName = "Sm_Lorry_adminTests"
-               ReferencedContainer = "container:Sm_Lorry_admin.xcodeproj">
+               BuildableName = "SmLorryAdminTests.xctest"
+               BlueprintName = "SmLorryAdminTests"
+               ReferencedContainer = "container:SmLorryAdmin.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -55,9 +55,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "Sm_Lorry_admin.app"
-            BlueprintName = "Sm_Lorry_admin"
-            ReferencedContainer = "container:Sm_Lorry_admin.xcodeproj">
+            BuildableName = "SmLorryAdmin.app"
+            BlueprintName = "SmLorryAdmin"
+            ReferencedContainer = "container:SmLorryAdmin.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -72,9 +72,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "Sm_Lorry_admin.app"
-            BlueprintName = "Sm_Lorry_admin"
-            ReferencedContainer = "container:Sm_Lorry_admin.xcodeproj">
+            BuildableName = "SmLorryAdmin.app"
+            BlueprintName = "SmLorryAdmin"
+            ReferencedContainer = "container:SmLorryAdmin.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

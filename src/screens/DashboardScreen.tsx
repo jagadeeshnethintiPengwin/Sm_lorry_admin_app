@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -15,7 +15,13 @@ import {
   TwinkleDot,
 } from '@components/index';
 import { useTopInset } from '@hooks/useTopInset';
+import { onLiveNotification } from '@services/realtime';
 import { reportService } from '@services/report.service';
+import {
+  notificationService,
+  tripService,
+  type LiveTrip,
+} from '@services/fleet.service';
 import type { DashboardSummary, TripsPerDay } from '@services/report.service';
 import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
@@ -33,8 +39,10 @@ import type { RootStackParamList } from '@navigation/types';
  *   4-cell stat grid · ACTIVE TRIPS navy card with progress rail ·
  *   QUICK ACTIONS 4-up · THIS WEEK bar chart
  *
- * The header uses `padding:52px 14px 32px` and the content `margin-top:-24px`,
- * so the first card overlaps the header — applied to the first child rather
+ * The header uses `padding:52px 14px 32px`. The mock pulls the content up over
+ * it with `margin-top:-24px` so the first card laps onto the navy; that is not
+ * done here — the card is spaced below the header instead, which keeps the two
+ * readable as separate surfaces. Any offset belongs on the first child rather
  * than the ScrollView, which would corrupt content-height measurement.
  */
 type Stat = {
@@ -169,6 +177,8 @@ export const DashboardScreen: React.FC = () => {
 
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [series, setSeries] = useState<TripsPerDay[]>([]);
+  const [live, setLive] = useState<LiveTrip[]>([]);
+  const [unread, setUnread] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
 
   /**
@@ -182,12 +192,30 @@ export const DashboardScreen: React.FC = () => {
   const load = useCallback(async () => {
     setFailure(null);
     try {
-      const [counts, perDay] = await Promise.all([
+      const [counts, perDay, board, unreadNow] = await Promise.all([
         reportService.dashboard(),
         reportService.tripsPerDay(),
+        /*
+         * The trip the card actually shows.
+         *
+         * It used to be a literal — #TR-2026-8836, Vizag → Hyderabad, Ramesh K,
+         * 128/620 KM — with the tap wired to that same reference, so every
+         * office saw one invented lorry and opening it led to a trip that was
+         * not the one running. `/trips/live` is the same board the fleet map
+         * reads.
+         */
+        tripService.live(),
+        /*
+         * The bell's badge. It was the literal `12`, on every device and every
+         * account, and it never moved — including for an office with nothing
+         * unread, which is the one state the badge exists to distinguish.
+         */
+        notificationService.unreadCount(),
       ]);
       setSummary(counts);
       setSeries(perDay);
+      setLive(board);
+      setUnread(unreadNow);
     } catch (error) {
       setFailure(
         (error as Error).message ||
@@ -202,6 +230,19 @@ export const DashboardScreen: React.FC = () => {
     }, [load]),
   );
 
+  /*
+   * The badge moves the moment one arrives, not on the next visit.
+   *
+   * `load` re-reads the count on focus, which covers coming back to the
+   * screen. It does nothing for the dashboard left open on a desk — the case
+   * this badge is for. The socket already delivers the notification; counting
+   * it here costs one request fewer than re-asking the server.
+   */
+  useEffect(
+    () => onLiveNotification(() => setUnread(current => current + 1)),
+    [],
+  );
+
   const stats = useMemo(() => statsOf(summary), [summary]);
   const week = useMemo(() => weekOf(series), [series]);
 
@@ -214,10 +255,36 @@ export const DashboardScreen: React.FC = () => {
     [navigation],
   );
   const openTrips = useCallback(() => navigation.navigate('Trips'), [navigation]);
-  const openTrip = useCallback(
-    () => navigation.navigate('TripDetails', { tripId: 'TR-2026-8836' }),
-    [navigation],
-  );
+  /**
+   * The lorry actually on the road, if there is one.
+   *
+   * `IN_TRANSIT` first, because that is what "active" means on this card; a
+   * scheduled trip has not left. The newest fix wins when several are running,
+   * so the card shows the one that most recently reported.
+   */
+  const activeTrip = useMemo(() => {
+    const moving = live.filter(t => t.status === 'IN_TRANSIT');
+    return (
+      [...moving].sort(
+        (a, b) =>
+          new Date(b.lastPingAt ?? 0).getTime() -
+          new Date(a.lastPingAt ?? 0).getTime(),
+      )[0] ?? null
+    );
+  }, [live]);
+
+  /** Clamped: a lorry that overshoots its routed distance is not 140% done. */
+  const tripPct = useMemo(() => {
+    const total = Number(activeTrip?.distanceKm ?? 0);
+    const done = Number(activeTrip?.coveredKm ?? 0);
+    return total ? Math.min(100, Math.max(0, Math.round((done / total) * 100))) : 0;
+  }, [activeTrip]);
+
+  const openTrip = useCallback(() => {
+    if (activeTrip) {
+      navigation.navigate('TripDetails', { tripId: activeTrip.tripId });
+    }
+  }, [activeTrip, navigation]);
 
   /** Each quick action has its own params, so route them explicitly. */
   const runQuickAction = useCallback(
@@ -280,13 +347,29 @@ export const DashboardScreen: React.FC = () => {
           <Pressable
             onPress={openNotifications}
             accessibilityRole="button"
-            accessibilityLabel="Notifications, 12 unread"
+            accessibilityLabel={
+              unread
+                ? `Notifications, ${unread} unread`
+                : 'Notifications, none unread'
+            }
             style={({ pressed }) => [styles.bell, pressed && styles.pressed]}
           >
             <Icon name="bell" size={16} color={palette.white} />
-            <View style={styles.bellBadge}>
-              <Text style={styles.bellBadgeText}>12</Text>
-            </View>
+            {/*
+              Hidden at zero rather than showing a `0`.
+
+              A badge is an exception marker: one that is always present stops
+              being read at all, which is how a permanent `12` went unnoticed.
+              Past 99 it caps — the exact number stops mattering long before
+              then, and three digits break the circle.
+            */}
+            {unread > 0 ? (
+              <View style={styles.bellBadge}>
+                <Text style={styles.bellBadgeText}>
+                  {unread > 99 ? '99+' : unread}
+                </Text>
+              </View>
+            ) : null}
           </Pressable>
         </View>
       </LinearGradient>
@@ -422,64 +505,91 @@ export const DashboardScreen: React.FC = () => {
           </Pressable>
         </View>
 
-        <Pressable
-          onPress={openTrip}
-          accessibilityRole="button"
-          accessibilityLabel="Trip TR-2026-8836, Vizag to Hyderabad, in transit"
-          style={({ pressed }) => [pressed && styles.pressed]}
-        >
-          <LinearGradient
-            colors={gradients.navyHero as unknown as string[]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.tripCard}
+        {activeTrip ? (
+          <Pressable
+            onPress={openTrip}
+            accessibilityRole="button"
+            accessibilityLabel={`Trip ${activeTrip.reference}, ${activeTrip.route}, in transit`}
+            style={({ pressed }) => [pressed && styles.pressed]}
           >
-            <RadialGlow
-              size={110}
-              color={palette.gold}
-              opacity={0.3}
-              top={-25}
-              right={-25}
-            />
+            <LinearGradient
+              colors={gradients.navyHero as unknown as string[]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.tripCard}
+            >
+              <RadialGlow
+                size={110}
+                color={palette.gold}
+                opacity={0.3}
+                top={-25}
+                right={-25}
+              />
 
-            <View style={styles.tripBody}>
-              <View style={styles.tripHead}>
-                <View style={styles.tripStatus}>
-                  <BlinkDot color={palette.gold} size={6} />
-                  <Text style={styles.tripStatusText}>IN TRANSIT</Text>
+              <View style={styles.tripBody}>
+                <View style={styles.tripHead}>
+                  <View style={styles.tripStatus}>
+                    <BlinkDot color={palette.gold} size={6} />
+                    <Text style={styles.tripStatusText}>IN TRANSIT</Text>
+                  </View>
+                  <Text style={styles.tripRef}>#{activeTrip.reference}</Text>
                 </View>
-                <Text style={styles.tripRef}>#TR-2026-8836</Text>
-              </View>
 
-              <View style={styles.tripRoute}>
-                <Text style={styles.tripCity}>Vizag</Text>
-                <Icon name="arrow-right" size={14} color={palette.gold} />
-                <Text style={styles.tripCity}>Hyderabad</Text>
-              </View>
-
-              <View style={styles.tripMeta}>
-                <Text style={styles.tripMetaText}>Ramesh K</Text>
-                <Text style={styles.tripMetaDivider}>|</Text>
-                <Text style={styles.tripMetaText}>AP 31 XX 1234</Text>
-              </View>
-
-              <View style={styles.tripProgressBlock}>
-                <View style={styles.tripProgressHead}>
-                  <Text style={styles.tripProgressText}>128 / 620 KM</Text>
-                  <Text style={styles.tripProgressPct}>21%</Text>
+                {/* The route arrives joined; split back into the two ends. */}
+                <View style={styles.tripRoute}>
+                  <Text style={styles.tripCity} numberOfLines={1}>
+                    {(activeTrip.route ?? '').split('→')[0]?.trim() || '—'}
+                  </Text>
+                  <Icon name="arrow-right" size={14} color={palette.gold} />
+                  <Text style={styles.tripCity} numberOfLines={1}>
+                    {(activeTrip.route ?? '').split('→')[1]?.trim() || '—'}
+                  </Text>
                 </View>
-                <View style={styles.tripTrack}>
-                  <LinearGradient
-                    colors={[palette.gold, palette.red]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.tripFill}
-                  />
+
+                <View style={styles.tripMeta}>
+                  <Text style={styles.tripMetaText} numberOfLines={1}>
+                    {activeTrip.driver ?? '—'}
+                  </Text>
+                  <Text style={styles.tripMetaDivider}>|</Text>
+                  <Text style={styles.tripMetaText} numberOfLines={1}>
+                    {activeTrip.registration ?? '—'}
+                  </Text>
+                </View>
+
+                <View style={styles.tripProgressBlock}>
+                  <View style={styles.tripProgressHead}>
+                    <Text style={styles.tripProgressText}>
+                      {activeTrip.distanceKm
+                        ? `${Math.round(activeTrip.coveredKm ?? 0)} / ${Math.round(activeTrip.distanceKm)} KM`
+                        : 'Distance not recorded'}
+                    </Text>
+                    <Text style={styles.tripProgressPct}>{tripPct}%</Text>
+                  </View>
+                  <View style={styles.tripTrack}>
+                    <LinearGradient
+                      colors={[palette.gold, palette.red]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={[styles.tripFill, { width: `${tripPct}%` }]}
+                    />
+                  </View>
                 </View>
               </View>
-            </View>
-          </LinearGradient>
-        </Pressable>
+            </LinearGradient>
+          </Pressable>
+        ) : (
+          /*
+           * Nothing on the road is an ordinary state for a fleet — an empty
+           * yard at 6am is not an error. Said plainly rather than drawn as an
+           * invented lorry that cannot be opened.
+           */
+          <View style={styles.tripEmpty}>
+            <Icon name="truck" size={16} color={palette.slate400} />
+            <Text style={styles.tripEmptyText}>
+              No trip is on the road right now.
+            </Text>
+          </View>
+        )}
 
         {/* Quick actions */}
         <Text style={[styles.sectionLabel, styles.sectionGap]}>
@@ -537,7 +647,10 @@ export const DashboardScreen: React.FC = () => {
 
           <View style={styles.chartAxis}>
             {week.map((bar, index) => (
-              <Text key={`${bar.day}-label-${index}`} style={styles.axisText}>
+              <Text
+                key={`${bar.day}-label-${index}`}
+                style={bar.today ? styles.axisTextToday : styles.axisText}
+              >
                 {bar.day}
               </Text>
             ))}
@@ -605,11 +718,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  /*
+   * A pill that grows, not a fixed circle.
+   *
+   * It was a hard 16×16 — enough for the single hardcoded `12`, and not enough
+   * for `99+`, which the 2px border trims to about 12px of usable width. A
+   * `minWidth` keeps a single digit perfectly round and lets two or three
+   * characters widen it instead of clipping.
+   */
   bellBadge: {
     position: 'absolute',
     top: s(-3),
     right: s(-3),
-    width: s(16),
+    minWidth: s(16),
+    paddingHorizontal: s(3),
     height: s(16),
     borderRadius: radius.full,
     backgroundColor: palette.red,
@@ -633,10 +755,19 @@ const styles = StyleSheet.create({
     ...font(9, '700', { lineHeight: 1.3, color: palette.red }),
     flex: 1 },
   failureRetry: font(9, '800', { color: palette.navy }),
-  contentTop: { paddingTop: 0 },
+  /*
+   * The gap under the header.
+   *
+   * The fleet card used to carry this itself as `marginTop: -10`, lapping onto
+   * the navy exactly as the mock does. Two problems with putting it on the
+   * card: the overlap left no breathing room under the header, and the card is
+   * not reliably the first thing here — the failure banner takes its place
+   * when the dashboard cannot load, and that rendered flush against the
+   * header. Spacing the content region covers whichever child comes first.
+   */
+  contentTop: { paddingTop: s(12) },
 
   fleetCard: {
-    marginTop: s(-10),
     backgroundColor: palette.white,
     borderRadius: radius.xxl,
     padding: s(12),
@@ -767,15 +898,43 @@ const styles = StyleSheet.create({
   tripStatusText: font(9, '800', { color: palette.gold, letterSpacing: 1 }),
   tripRef: font(10, '800', { color: palette.gold }),
   tripRoute: { flexDirection: 'row', alignItems: 'center', gap: s(8) },
-  tripCity: font(12, '800', { color: palette.white }),
+  /*
+   * Allowed to shrink, which `numberOfLines` alone does not arrange.
+   *
+   * `flexShrink` defaults to 0 in React Native, so a Text in a row keeps its
+   * full intrinsic width and simply overflows the parent — `numberOfLines`
+   * caps the number of lines, not the width. The card used to hold "Vizag →
+   * Hyderabad" and fitted by luck; real bookings carry addresses like
+   * "Gachibowli 3rd Floor, Shresta Marvel, … Telangana 500032, India", which
+   * ran straight out of the card.
+   *
+   * `minWidth: 0` because a flex child's automatic minimum size is its content
+   * — without it the shrink is permitted and then refused.
+   */
+  tripCity: {
+    ...font(12, '800', { color: palette.white }),
+    flexShrink: 1,
+    minWidth: 0,
+  },
   tripMeta: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: s(8),
     marginTop: s(3),
   },
-  tripMetaText: { ...font(9, '700', { color: palette.white }), opacity: 0.85 },
-  tripMetaDivider: { ...font(9, '700', { color: palette.white }), opacity: 0.4 },
+  /* Driver names and registrations run long too — same rule. */
+  tripMetaText: {
+    ...font(9, '700', { color: palette.white }),
+    opacity: 0.85,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  /* The divider is punctuation: it must never be the thing that shrinks. */
+  tripMetaDivider: {
+    ...font(9, '700', { color: palette.white }),
+    opacity: 0.4,
+    flexShrink: 0,
+  },
   tripProgressBlock: { marginTop: s(8) },
   tripProgressHead: {
     flexDirection: 'row',
@@ -793,6 +952,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.xxs,
     overflow: 'hidden',
   },
+  tripEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(9),
+    padding: s(14),
+    backgroundColor: palette.surfaceAlt,
+    borderRadius: radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.border,
+  },
+  tripEmptyText: font(10, '600', { color: palette.slate500 }),
   tripFill: { height: '100%', width: '21%', borderRadius: radius.xxs },
 
   quickGrid: { flexDirection: 'row', gap: s(6), marginBottom: s(12) },
@@ -838,12 +1008,35 @@ const styles = StyleSheet.create({
     height: s(60),
   },
   bar: { flex: 1, borderTopLeftRadius: s(3), borderTopRightRadius: s(3) },
+  /*
+   * The axis must share the bars' column rules, not its own.
+   *
+   * The bars are `flex: 1` with `gap: 5`, so each occupies an equal share of
+   * the row. The labels used `justifyContent: 'space-between'` with no flex
+   * and no gap, which lays out seven glyph-width labels edge to edge instead —
+   * the first pinned left, the last pinned right, the rest spread evenly. That
+   * spacing does not match equal columns, so every label between the ends sat
+   * off its bar, drifting further towards the middle.
+   *
+   * Same `gap`, and each label `flex: 1` and centred: one label per column,
+   * centred on the bar above it.
+   */
   chartAxis: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: s(5),
     marginTop: s(6),
   },
-  axisText: font(8, '700', { color: palette.slate500 }),
+  axisText: {
+    ...font(8, '700', { color: palette.slate500 }),
+    flex: 1,
+    textAlign: 'center',
+  },
+  /* Today's label picked out, matching the navy bar above it. */
+  axisTextToday: {
+    ...font(8, '800', { color: palette.navy }),
+    flex: 1,
+    textAlign: 'center',
+  },
 
   pressed: { opacity: 0.8 },
 });

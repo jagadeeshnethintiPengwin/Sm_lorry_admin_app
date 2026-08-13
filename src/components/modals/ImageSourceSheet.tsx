@@ -9,7 +9,7 @@ import { gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
-import { s, wp } from '@theme/metrics';
+import { s } from '@theme/metrics';
 
 /**
  * "Take photo / choose from gallery / attach a file" dialog.
@@ -74,11 +74,11 @@ const Option: React.FC<OptionProps> = ({
         end={{ x: 1, y: 1 }}
         style={[styles.tile, shadows.goldSmall]}
       >
-        <Icon name={icon} size={20} color={palette.white} />
+        <Icon name={icon} size={18} color={palette.white} />
       </LinearGradient>
     ) : (
       <View style={[styles.tile, { backgroundColor: tileBg }]}>
-        <Icon name={icon} size={20} color={tileColor} />
+        <Icon name={icon} size={18} color={tileColor} />
       </View>
     )}
 
@@ -107,14 +107,9 @@ const ImageSourceSheetComponent: React.FC<ImageSourceSheetProps> = ({
   onDocument,
   onRemove,
 }) => (
-  // The side inset is a share of the display rather than a scaled mock value,
-  // so the dialog keeps the same visual margin on a narrow handset and a tablet.
-  <CenterModal
-    visible={visible}
-    onClose={onClose}
-    padding={0}
-    style={styles.dialog}
-  >
+  // No `inset`: the side margin is `CenterModal`'s, so this dialog and the
+  // picker beside it cannot drift apart again.
+  <CenterModal visible={visible} onClose={onClose} padding={0}>
     {/* Navy header cap — the brand moment that lifts this above a plain list */}
     <LinearGradient
       colors={gradients.navyHero as unknown as string[]}
@@ -175,15 +170,15 @@ const ImageSourceSheetComponent: React.FC<ImageSourceSheetProps> = ({
         accessibilityLabel="Cancel"
         style={({ pressed }) => [styles.cancel, pressed && styles.optionPressed]}
       >
-        <Text style={styles.cancelText}>Cancel</Text>
+        {/* Uppercase to match the tracking — 1.2 spacing on mixed case reads
+            as a rendering fault rather than a deliberate micro-label. */}
+        <Text style={styles.cancelText}>CANCEL</Text>
       </Pressable>
     </View>
   </CenterModal>
 );
 
 const styles = StyleSheet.create({
-  /** Overrides `CenterModal`'s scaled inset with a share of the screen width. */
-  dialog: { marginHorizontal: wp(5) },
   header: {
     alignItems: 'center',
     paddingTop: s(20),
@@ -194,8 +189,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   headerIcon: {
-    width: s(46),
-    height: s(46),
+    width: s(42),
+    height: s(42),
     borderRadius: radius.full,
     backgroundColor: 'rgba(245,166,35,0.18)',
     borderWidth: StyleSheet.hairlineWidth,
@@ -204,10 +199,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: s(10),
   },
-  title: font(15, '800', { color: palette.white }),
+  // Matches the picker's cap — smaller, tracked tight, hierarchy carried by
+  // spacing rather than by shouting.
+  title: font(13, '800', { color: palette.white, letterSpacing: -0.2 }),
   subtitle: {
-    ...font(10, '600', { color: palette.white }),
-    opacity: 0.8,
+    ...font(9, '600', { color: palette.white, letterSpacing: 0.2 }),
+    opacity: 0.75,
     marginTop: s(3),
     textAlign: 'center',
   },
@@ -227,29 +224,37 @@ const styles = StyleSheet.create({
   optionDestructive: { borderColor: palette.redSoft },
   optionPressed: { opacity: 0.72 },
   tile: {
-    width: s(42),
-    height: s(42),
+    width: s(38),
+    height: s(38),
     borderRadius: radius.card,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
   optionBody: { flex: 1, minWidth: 0 },
-  optionLabel: font(12, '800', { color: palette.navy }),
-  optionLabelRed: font(12, '800', { color: palette.red }),
+  optionLabel: font(11, '800', { color: palette.navy }),
+  optionLabelRed: font(11, '800', { color: palette.red }),
   optionHint: {
-    ...font(9, '600', { color: palette.slate500 }),
+    ...font(8, '600', { color: palette.slate500 }),
     marginTop: s(2),
   },
 
+  /*
+   * A footer action, not another row in the list.
+   *
+   * With a tinted fill and the option rows' radius it read as one more card in
+   * the stack. Matching the picker's treatment — hairline above, no fill — is
+   * what makes it the way out rather than the last item.
+   */
   cancel: {
-    marginTop: s(2),
-    paddingVertical: s(12),
+    marginTop: s(4),
+    paddingTop: s(12),
+    paddingBottom: s(2),
     alignItems: 'center',
-    borderRadius: radius.lg,
-    backgroundColor: palette.surfaceAlt,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.divider,
   },
-  cancelText: font(12, '800', { color: palette.slate500 }),
+  cancelText: font(10, '800', { color: palette.slate500, letterSpacing: 1.2 }),
 });
 
 export const ImageSourceSheet = memo(ImageSourceSheetComponent);

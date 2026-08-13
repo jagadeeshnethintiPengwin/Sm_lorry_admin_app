@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -15,6 +14,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button, Callout, Icon, RadarRing, Screen } from '@components/index';
 import { useAppDispatch } from '@store/index';
 import { verifyOtp } from '@store/slices/auth.slice';
+import { authService } from '@services/auth.service';
 import { useTopInset } from '@hooks/useTopInset';
 import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
@@ -68,6 +68,43 @@ export const OtpVerificationScreen: React.FC = () => {
     const timer = setTimeout(() => setSeconds(current => current - 1), 1000);
     return () => clearTimeout(timer);
   }, [seconds]);
+
+  const [resending, setResending] = useState(false);
+  const waiting = seconds > 0 || resending;
+
+  /**
+   * Asks the server for a new code.
+   *
+   * This used to be `setSeconds(RESEND_SECONDS)` and nothing else: the
+   * countdown restarted and no code was ever sent. Someone who genuinely did
+   * not receive the first one could press it all evening and wait on a message
+   * nobody had asked for — `authService.resendOtp` existed the whole time and
+   * was never called.
+   *
+   * The timer restarts only once the request succeeds, so a failed resend can
+   * be retried immediately rather than locking the button for another 32
+   * seconds over a request that never happened.
+   */
+  const resendCode = useCallback(async () => {
+    setResending(true);
+    setFailure(null);
+    try {
+      await authService.resendOtp(
+        route.params.mobile,
+        route.params.verificationId,
+      );
+      setSeconds(RESEND_SECONDS);
+      setCode(INITIAL_CODE);
+      inputs.current[0]?.focus();
+    } catch (error) {
+      setFailure(
+        (error as Error)?.message ||
+          'Could not send a new code. Check your signal and try again.',
+      );
+    } finally {
+      setResending(false);
+    }
+  }, [route.params.mobile, route.params.verificationId]);
 
   const handleChange = useCallback((value: string, index: number) => {
     const digit = value.replace(/[^0-9]/g, '').slice(-1);
@@ -223,18 +260,32 @@ export const OtpVerificationScreen: React.FC = () => {
             onPress={verify}
           />
 
+          {/*
+            One line, because the link is a `Text` and not a `Pressable`.
+
+            A `Pressable` is a View, and a View nested inside a `Text` is laid
+            out as an inline block with no shared baseline — so "Resend code"
+            sat below "Didn't receive?" instead of beside it. Nested `Text`
+            runs flow as one sentence and align on the same baseline, which is
+            what this always meant to be. `Text` takes `onPress` itself, so
+            nothing is lost by dropping the wrapper.
+          */}
           <Text style={styles.resend}>
             Didn&apos;t receive?{' '}
-            <Pressable
-              onPress={() => setSeconds(RESEND_SECONDS)}
-              disabled={seconds > 0}
+            <Text
+              style={waiting ? styles.resendWaiting : styles.resendLink}
+              onPress={waiting ? undefined : resendCode}
+              suppressHighlighting={waiting}
               accessibilityRole="button"
               accessibilityLabel="Resend code"
+              accessibilityState={{ disabled: waiting, busy: resending }}
             >
-              <Text style={styles.resendLink}>
-                {seconds > 0 ? `Resend in ${seconds}s` : 'Resend code'}
-              </Text>
-            </Pressable>
+              {resending
+                ? 'Sending…'
+                : waiting
+                  ? `Resend in ${seconds}s`
+                  : 'Resend code'}
+            </Text>
           </Text>
         </View>
 
@@ -342,6 +393,11 @@ const styles = StyleSheet.create({
     marginTop: s(12),
   },
   resendLink: font(10, '800', { color: palette.red }),
+  /*
+   * The waiting state is the same line in a muted tone rather than a different
+   * shape, so the sentence does not reflow when the countdown ends.
+   */
+  resendWaiting: font(10, '800', { color: palette.slate400 }),
 
   noteWrap: { marginTop: 'auto', marginHorizontal: s(16), marginBottom: s(16) },
 });

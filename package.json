@@ -1,5 +1,5 @@
 {
-  "name": "Sm_Lorry_admin",
+  "name": "SmLorryAdmin",
   "version": "0.0.1",
   "private": true,
   "scripts": {
@@ -15,6 +15,8 @@
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native-community/datetimepicker": "^8.6.0",
+    "@react-native-firebase/app": "^26.2.0",
+    "@react-native-firebase/messaging": "^26.2.0",
     "@react-native/new-app-screen": "0.87.0-rc.4",
     "@react-navigation/bottom-tabs": "^7.18.14",
     "@react-navigation/native": "^7.3.14",
@@ -37,7 +39,8 @@
     "react-native-svg": "^15.15.5",
     "react-native-vector-icons": "^10.3.0",
     "react-native-worklets": "0.12.0-nightly-20260807-fb68ce75c",
-    "react-redux": "^9.3.0"
+    "react-redux": "^9.3.0",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

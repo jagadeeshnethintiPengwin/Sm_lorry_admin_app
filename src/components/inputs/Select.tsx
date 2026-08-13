@@ -19,7 +19,7 @@ import { gradients, palette } from '@theme/colors';
 import { font, typography } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
-import { s, wp } from '@theme/metrics';
+import { hp, s, wp } from '@theme/metrics';
 
 /**
  * `select.f7b-input` from the mock. The CSS renders a native `<select>` with a
@@ -126,6 +126,15 @@ const SelectComponent: React.FC<SelectProps> = ({
 
       <FieldError>{error}</FieldError>
 
+      {/*
+        The picker sits wider than `CenterModal`'s default.
+
+        A dialog of three or four actions reads well inset; a picker is a list
+        of option rows whose labels run long — "19 Ft Truck (up to 12 Ton)", a
+        registration plus its status — and the narrower margin buys the room
+        that keeps them on one line. It is the one place a different width is
+        deliberate, so it is stated here rather than left to the default.
+      */}
       <CenterModal
         visible={open}
         onClose={() => setOpen(false)}
@@ -259,7 +268,7 @@ const styles = StyleSheet.create({
     // The CSS chevron points down; the shared glyph points right.
     transform: [{ rotate: '90deg' }],
   },
-  /** A share of the screen, matching the Upload Document dialog. */
+  /** 5% a side, against `CenterModal`'s 8% — see the note at the modal. */
   dialog: { marginHorizontal: wp(5) },
 
   header: {
@@ -272,8 +281,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   headerIcon: {
-    width: s(46),
-    height: s(46),
+    width: s(42),
+    height: s(42),
     borderRadius: radius.full,
     backgroundColor: 'rgba(245,166,35,0.18)',
     borderWidth: StyleSheet.hairlineWidth,
@@ -282,22 +291,43 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: s(10),
   },
-  headerTitle: font(15, '800', { color: palette.white }),
+  /*
+   * Smaller and tracked, which is where the premium feel comes from.
+   *
+   * Weight was carrying the hierarchy on its own at 15/800, which reads as
+   * loud rather than considered. Dropping the size and letting negative
+   * tracking tighten the word does the same job more quietly, and leaves the
+   * card's whitespace — not its type — as the dominant impression.
+   */
+  headerTitle: font(13, '800', { color: palette.white, letterSpacing: -0.2 }),
   headerSubtitle: {
-    ...font(10, '600', { color: palette.white }),
-    opacity: 0.8,
+    ...font(9, '600', { color: palette.white, letterSpacing: 0.2 }),
+    opacity: 0.75,
     marginTop: s(3),
     textAlign: 'center',
   },
 
-  body: { padding: s(14), gap: s(8) },
+  // `flexShrink` so that when room is tight it is the *list* that gives way.
+  // The action below it must never be what gets squeezed off the card.
+  body: { padding: s(14), gap: s(10), flexShrink: 1, minHeight: 0 },
+
   /*
-   * Capped so a long catalogue scrolls inside the card instead of pushing the
-   * dialog off the screen — seven vehicle types already reach further than a
-   * short handset has room for.
+   * Capped against the screen's height, not its width.
+   *
+   * This was `s(300)` — and `s()` scales by screen *width*, so a vertical
+   * limit was being derived from a horizontal measurement. On this handset it
+   * worked out at 43% of the height by coincidence; on a short wide screen it
+   * would have exceeded it. `hp` asks the question actually being asked.
    */
-  list: { maxHeight: s(300) },
-  listContent: { gap: s(8), paddingBottom: s(2) },
+  list: { maxHeight: hp(42), flexShrink: 1, minHeight: 0 },
+  /*
+   * Room for the cards' shadows inside the scroll area.
+   *
+   * A ScrollView clips its children, so a card flush against the edge loses
+   * the shadow that separates it from the one behind — and the last row ended
+   * up looking cut off rather than scrollable.
+   */
+  listContent: { gap: s(8), paddingVertical: s(3), paddingHorizontal: s(2) },
 
   option: {
     flexDirection: 'row',
@@ -316,8 +346,8 @@ const styles = StyleSheet.create({
   },
   optionPressed: { opacity: 0.72 },
   optionTile: {
-    width: s(34),
-    height: s(34),
+    width: s(32),
+    height: s(32),
     borderRadius: radius.card,
     alignItems: 'center',
     justifyContent: 'center',
@@ -326,24 +356,36 @@ const styles = StyleSheet.create({
   },
   optionTileActive: { backgroundColor: palette.gold },
   optionLabel: {
-    ...font(12, '600', { color: palette.navy }),
+    ...font(11, '600', { color: palette.navy }),
     flex: 1,
     minWidth: 0,
   },
   optionLabelOn: {
-    ...font(12, '800', { color: palette.navy }),
+    ...font(11, '800', { color: palette.navy }),
     flex: 1,
     minWidth: 0,
   },
 
+  /*
+   * The action, set apart from the list rather than stacked onto it.
+   *
+   * It had `marginTop: s(2)` and a tinted background with the same radius as
+   * the option rows, so it sat flush under the last white card and read as one
+   * more item in the list — the thing you scroll past, not the way out. A
+   * hairline and real space above it make it a footer; the border gives it an
+   * edge of its own so it stops borrowing the cards' shape.
+   */
   cancel: {
-    marginTop: s(2),
-    paddingVertical: s(12),
+    marginTop: s(4),
+    paddingTop: s(12),
+    paddingBottom: s(2),
     alignItems: 'center',
-    borderRadius: radius.lg,
-    backgroundColor: palette.surfaceAlt,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.divider,
   },
-  cancelText: font(12, '800', { color: palette.slate500 }),
+  // Micro-label treatment: small, heavy, widely tracked. Uppercase at this
+  // size needs the extra spacing or the letters run together.
+  cancelText: font(10, '800', { color: palette.slate500, letterSpacing: 1.2 }),
 });
 
 export const Select = memo(SelectComponent);

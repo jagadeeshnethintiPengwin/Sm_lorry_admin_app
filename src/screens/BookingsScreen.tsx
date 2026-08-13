@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -7,7 +7,12 @@ import {
   View,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import {
+  useFocusEffect,
+  useNavigation,
+  useRoute,
+} from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
@@ -25,7 +30,7 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
-import type { RootStackParamList } from '@navigation/types';
+import type { RootStackParamList, TabParamList } from '@navigation/types';
 
 /**
  * Screen 16 — Bookings List.
@@ -162,7 +167,23 @@ function toRow(
 export const BookingsScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<RouteProp<TabParamList, 'Bookings'>>();
+
   const [tab, setTab] = useState<Tab>('pending');
+
+  /*
+   * Arriving with a bucket named shows that bucket.
+   *
+   * Approving moves a booking out of Pending, so returning to Pending showed
+   * an operator the absence of what they had just done. The review screen now
+   * says where the outcome landed and the list opens there.
+   */
+  const requestedTab = route.params?.tab;
+  useEffect(() => {
+    if (requestedTab) {
+      setTab(requestedTab);
+    }
+  }, [requestedTab]);
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<string | null>(null);
@@ -224,22 +245,27 @@ export const BookingsScreen: React.FC = () => {
     [rows, tab],
   );
 
-  /** Approve or reject, then re-read so the tabs and counts follow. */
-  const decide = useCallback(
-    (id: string, approve: boolean) => async () => {
+  /**
+   * Rejects a booking, then re-reads so the tabs and counts follow.
+   *
+   * Reject only: approving takes a vehicle and a driver, which is a choice
+   * this row cannot make. The branch that called `approve(id)` with no body
+   * was unreachable — nothing wired a button to it — but it could only ever
+   * have returned `400 vehicleId must be a string`, so it is gone rather than
+   * left for the next person to connect. Approval goes through Review &
+   * Assign, which is where the vehicle and driver are chosen.
+   */
+  const rejectBooking = useCallback(
+    (id: string) => async () => {
       setBusyId(id);
       setFailure(null);
       try {
-        if (approve) {
-          await bookingService.approve(id);
-        } else {
-          await bookingService.reject(id, 'Rejected from the panel');
-        }
+        await bookingService.reject(id, 'Rejected from the panel');
         await load();
+        setTab('rejected');
       } catch (error) {
         setFailure(
-          (error as Error).message ||
-            `Could not ${approve ? 'approve' : 'reject'} the booking.`,
+          (error as Error).message || 'Could not reject the booking.',
         );
       } finally {
         setBusyId(null);
@@ -370,7 +396,7 @@ export const BookingsScreen: React.FC = () => {
                       and did nothing. It now calls the API and re-reads, so
                       the row moves to the Rejected tab. */}
                   <Pressable
-                    onPress={decide(booking.id, false)}
+                    onPress={rejectBooking(booking.id)}
                     disabled={busyId === booking.id}
                     accessibilityRole="button"
                     accessibilityLabel={`Reject ${booking.reference}`}

@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "603964320951",
+    "project_id": "simhadritransport-12e91",
+    "storage_bucket": "simhadritransport-12e91.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:603964320951:android:f17e820be10f7f9db37132",
+        "android_client_info": {
+          "package_name": "com.simhadritransport"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDma3O0wkqVHVDk46Q3PF6-FJumPRaOl3A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:603964320951:android:e7f5a3c54056e02eb37132",
+        "android_client_info": {
+          "package_name": "com.simhadritransport.admin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDma3O0wkqVHVDk46Q3PF6-FJumPRaOl3A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:603964320951:android:ab342f030c9c5adfb37132",
+        "android_client_info": {
+          "package_name": "com.simhadritransport.driver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDma3O0wkqVHVDk46Q3PF6-FJumPRaOl3A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

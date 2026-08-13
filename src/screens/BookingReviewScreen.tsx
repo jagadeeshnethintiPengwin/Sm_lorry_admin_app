@@ -1,13 +1,23 @@
-import React, { useCallback, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Linking,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
   AppHeader,
   BlinkDot,
   Button,
   Card,
+  ConfirmDialog,
   Content,
   Footer,
   Icon,
@@ -20,6 +30,29 @@ import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
+import type { RootStackParamList } from '@navigation/types';
+import {
+  bookingService,
+  documentService,
+  driverService,
+  vehicleService,
+  type AdminDocument,
+} from '@services/fleet.service';
+import { openExternalUrl } from '@utils/openExternalUrl';
+import { useApi } from '@hooks/useApi';
+import type { ConfirmTone } from '@components/modals/ConfirmDialog';
+import type { IconName } from '@components/common/Icon';
+
+/** A pending decision or outcome, shown by the dialog at the foot of the screen. */
+type Dialog = {
+  tone: ConfirmTone;
+  icon: IconName;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  onConfirm: () => void;
+};
 
 /**
  * Screen 17 — Review Booking.
@@ -29,20 +62,42 @@ import { s } from '@theme/metrics';
  *   attached documents pair · ASSIGN VEHICLE and ASSIGN DRIVER selects, each
  *   with the confirmed best-match card · Reject / Approve & Dispatch footer
  */
-const VEHICLES = [
-  {
-    label: 'AP 39 TR 4522 (17 Ft) — Best match, Available',
-    value: 'AP39TR4522',
-  },
-  { label: 'AP 31 XX 1234 (14 Ft) — In Trip', value: 'AP31XX1234' },
-  { label: 'AP 05 CH 9912 (Mini Truck)', value: 'AP05CH9912' },
-];
+/*
+ * The assign lists were three hardcoded lorries and three hardcoded people,
+ * whose values (`AP39TR4522`, `manoj`) were registration plates and first
+ * names — not ids. Approving could never have worked against the API, which
+ * takes a `vehicleId` and a `driverId`.
+ */
 
-const DRIVERS = [
-  { label: 'Manoj K — Available, near pickup (Best)', value: 'manoj' },
-  { label: 'Prakash R', value: 'prakash' },
-  { label: 'Ramesh K (In Trip)', value: 'ramesh' },
-];
+/**
+ * How each kind of paperwork is labelled and coloured.
+ *
+ * Keyed by the API's `kind`, so a document is drawn as what it actually is.
+ * The screen used to hardcode exactly two cards — an e-way bill and an
+ * invoice — regardless of what had been filed, which meant a booking carrying
+ * a lorry receipt showed neither it nor the truth about the other two.
+ */
+const DOC_STYLE: Record<
+  string,
+  { label: string; icon: IconName; bg: string; color: string }
+> = {
+  EWAY: { label: 'E-way Bill', icon: 'scroll-text', bg: palette.navyTint, color: palette.navy },
+  INVOICE: { label: 'Invoice', icon: 'receipt', bg: palette.goldTint, color: palette.gold },
+  WAYBILL: { label: 'Waybill', icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+  LR: { label: 'Lorry Receipt', icon: 'file-check', bg: palette.goldTint, color: palette.gold },
+  POD: { label: 'Proof of Delivery', icon: 'package-check', bg: palette.redTint, color: palette.red },
+  OTHER: { label: 'Document', icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+};
+
+/** `12326` -> `12 KB`. Bytes are what the API stores; nobody reads bytes. */
+function formatSize(bytes: number): string {
+  if (!bytes) {
+    return '—';
+  }
+  return bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 const PACKAGE = [
   { label: 'MATERIAL', value: 'Steel Pipes' },
@@ -52,14 +107,263 @@ const PACKAGE = [
 ];
 
 export const BookingReviewScreen: React.FC = () => {
-  const navigation = useNavigation();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<RouteProp<RootStackParamList, 'BookingReview'>>();
+  const { bookingId } = route.params;
 
-  const [vehicle, setVehicle] = useState('AP39TR4522');
-  const [driver, setDriver] = useState('manoj');
+  const [vehicle, setVehicle] = useState('');
+  const [driver, setDriver] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  /*
+   * The dialog is state rather than an imperative call.
+   *
+   * `Alert.alert` fires and forgets, which is why it cannot be styled and why
+   * a screen using it has no say in what the dialog looks like while a request
+   * is in flight. Holding the decision here lets the same surface show the
+   * question, then the spinner, then the result.
+   */
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const closeDialog = useCallback(() => setDialog(null), []);
+
+  /*
+   * Only what can actually take the job.
+   *
+   * `/vehicles/available` and `/drivers/available` exclude anything in
+   * maintenance or off duty, and — since the double-booking fix — anything
+   * already carrying a load. Those are the same refusals `approve` makes, so
+   * every option shown here can actually be chosen.
+   */
+  const fleet = useApi(() => vehicleService.available(), []);
+  const roster = useApi(() => driverService.available(), []);
+
+  /*
+   * The booking being reviewed.
+   *
+   * The screen took a `bookingId` and never fetched it — the documents pair
+   * below was a hardcoded "E-way Bill · 234 KB" and "Invoice · 1.1 MB", shown
+   * on every booking whether or not either had ever been attached.
+   */
+  const booking = useApi(() => bookingService.get(bookingId), [bookingId]);
+
+  /**
+   * The paperwork actually filed against this shipment.
+   *
+   * Ordered so the two the office looks for — the e-way bill and the invoice —
+   * come first, then everything else in the order it was filed.
+   */
+  const documents = useMemo(() => {
+    const rows = (booking.data?.documents ?? []) as AdminDocument[];
+    const rank = (kind: string) =>
+      kind === 'EWAY' ? 0 : kind === 'INVOICE' ? 1 : 2;
+    return [...rows].sort((a, b) => rank(String(a.kind)) - rank(String(b.kind)));
+  }, [booking.data]);
+
+  const [openingDoc, setOpeningDoc] = useState<string | null>(null);
+
+  /**
+   * Opens one, through a signed link.
+   *
+   * The eye beside each document was an `Icon`, not a control — it could not
+   * be pressed at all, so an approver could see that an e-way bill existed and
+   * had no way to read it before deciding.
+   */
+  const viewDocument = useCallback(async (id: string) => {
+    setOpeningDoc(id);
+    try {
+      await openExternalUrl(await documentService.downloadUrl(id));
+    } catch (failure) {
+      setDialog({
+        tone: 'danger',
+        icon: 'alert-circle',
+        title: 'Could not open it',
+        message:
+          failure instanceof Error
+            ? failure.message
+            : 'That document is not available.',
+        confirmLabel: 'Close',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setOpeningDoc(null);
+    }
+  }, []);
+
+  const vehicleOptions = useMemo(
+    () =>
+      (fleet.data ?? []).map(row => ({
+        value: String(row.id),
+        label: [row.registration, row.type && `(${row.type})`, row.status === 'IN_TRIP' ? '— In Trip' : '— Available']
+          .filter(Boolean)
+          .join(' '),
+      })),
+    [fleet.data],
+  );
+
+  const driverOptions = useMemo(
+    () =>
+      (roster.data ?? []).map(row => {
+        const user = (row.user ?? {}) as { name?: string };
+        return {
+          value: String(row.id),
+          label: [user.name ?? 'Driver', row.status === 'ON_TRIP' ? '— On Trip' : '— Online']
+            .filter(Boolean)
+            .join(' '),
+        };
+      }),
+    [roster.data],
+  );
 
   const call = useCallback(() => {
     Linking.openURL('tel:+919876543210').catch(() => undefined);
   }, []);
+
+  /**
+   * Reports the outcome, then returns to the list *on the bucket it moved to*.
+   *
+   * `goBack` alone landed the operator on Pending, where the booking they had
+   * just approved is correctly absent — so a successful approval looked like
+   * nothing had happened. Naming the tab puts the result on screen.
+   */
+  const finish = useCallback(
+    (title: string, message: string, tab: 'approved' | 'rejected') => {
+      setDialog({
+        tone: 'success',
+        icon: 'check-circle-2',
+        title,
+        message,
+        confirmLabel: 'Done',
+        onConfirm: () => {
+          setDialog(null);
+          navigation.navigate('Tabs', { screen: 'Bookings', params: { tab } });
+        },
+      });
+    },
+    [navigation],
+  );
+
+  const approve = useCallback(
+    async (assignOffDuty = false) => {
+      if (!vehicle || !driver) {
+        setDialog({
+          tone: 'gold',
+          icon: 'user-cog',
+          title: 'Assign first',
+          message: 'Choose both a vehicle and a driver before approving.',
+          confirmLabel: 'Got it',
+          onConfirm: closeDialog,
+        });
+        return;
+      }
+      setBusy(true);
+      try {
+        await bookingService.approve(bookingId, {
+          vehicleId: vehicle,
+          driverId: driver,
+          ...(assignOffDuty ? { assignOffDuty: true } : {}),
+        });
+        finish(
+          'Approved & dispatched',
+          'The trip has been created and the driver notified.',
+          'approved',
+        );
+      } catch (error) {
+        const detail =
+          error instanceof Error ? error.message : 'Could not approve';
+
+        /*
+         * A driver who went off duty between loading this screen and approving
+         * it is a refusal the office is allowed to overrule — but only by
+         * saying so, which is exactly what `assignOffDuty` means. Offering the
+         * override here beats a dead end that sends them back to reassign.
+         */
+        /*
+         * Taken by someone else while this screen was open.
+         *
+         * The lists are a snapshot: another dispatcher can assign the same
+         * lorry between this screen loading and Approve being pressed, and the
+         * server refuses it. Reloading both here means the operator's next
+         * choice is made from what is free *now* rather than from the stale
+         * list that just failed them.
+         */
+        if (/already on trip/i.test(detail)) {
+          fleet.refetch();
+          roster.refetch();
+          setDialog({
+            tone: 'gold',
+            icon: 'truck',
+            title: 'Already assigned',
+            message: `${detail}.\n\nThe lists have been refreshed — pick another and try again.`,
+            confirmLabel: 'Choose another',
+            onConfirm: closeDialog,
+          });
+          return;
+        }
+
+        if (/off duty|off-duty/i.test(detail) && !assignOffDuty) {
+          setDialog({
+            tone: 'gold',
+            icon: 'user-check',
+            title: 'Driver is off duty',
+            message: `${detail}\n\nAssign them anyway?`,
+            confirmLabel: 'Assign anyway',
+            cancelLabel: 'Cancel',
+            onConfirm: () => {
+              setDialog(null);
+              approve(true);
+            },
+          });
+          return;
+        }
+        setDialog({
+          tone: 'danger',
+          icon: 'alert-circle',
+          title: 'Could not approve',
+          message: detail,
+          confirmLabel: 'Close',
+          onConfirm: closeDialog,
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bookingId, closeDialog, driver, finish, fleet, roster, vehicle],
+  );
+
+  const reject = useCallback(() => {
+    setDialog({
+      tone: 'danger',
+      icon: 'alert-triangle',
+      title: 'Reject this booking?',
+      message: 'The customer is told it was declined. This cannot be undone.',
+      confirmLabel: 'Reject booking',
+      cancelLabel: 'Keep it',
+      onConfirm: async () => {
+        setBusy(true);
+        try {
+          await bookingService.reject(bookingId, 'Rejected by the office');
+          finish(
+            'Booking rejected',
+            'The customer has been notified.',
+            'rejected',
+          );
+        } catch (error) {
+          setDialog({
+            tone: 'danger',
+            icon: 'alert-circle',
+            title: 'Could not reject',
+            message:
+              error instanceof Error ? error.message : 'Please try again',
+            confirmLabel: 'Close',
+            onConfirm: closeDialog,
+          });
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  }, [bookingId, closeDialog, finish]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -183,47 +487,80 @@ export const BookingReviewScreen: React.FC = () => {
         </Card>
 
         {/* Documents */}
-        <View style={styles.docGrid}>
-          <View style={styles.docCard}>
-            <IconWell
-              icon="scroll-text"
-              size={26}
-              iconSize={14}
-              backgroundColor={palette.navyTint}
-              color={palette.navy}
-              borderRadius={radius.md}
-            />
-            <View style={styles.docBody}>
-              <Text style={styles.docName}>E-way Bill</Text>
-              <Text style={styles.docSize}>234 KB</Text>
-            </View>
-            <Icon name="eye" size={14} color={palette.slate500} />
+        {documents.length ? (
+          <View style={styles.docGrid}>
+            {documents.map(doc => {
+              const kind = String(doc.kind ?? 'OTHER');
+              const style = DOC_STYLE[kind] ?? DOC_STYLE.OTHER;
+              const id = String(doc.id);
+              return (
+                <Pressable
+                  key={id}
+                  style={({ pressed }) => [
+                    styles.docCard,
+                    pressed ? styles.docCardPressed : null,
+                  ]}
+                  onPress={() => viewDocument(id)}
+                  disabled={openingDoc !== null}
+                  accessibilityRole="button"
+                  accessibilityLabel={`View ${style.label}`}
+                  accessibilityState={{ busy: openingDoc === id }}
+                >
+                  <IconWell
+                    icon={style.icon}
+                    size={26}
+                    iconSize={14}
+                    backgroundColor={style.bg}
+                    color={style.color}
+                    borderRadius={radius.md}
+                  />
+                  <View style={styles.docBody}>
+                    <Text style={styles.docName} numberOfLines={1}>
+                      {style.label}
+                    </Text>
+                    {/* The real size, not a fixed "234 KB" on every booking. */}
+                    <Text style={styles.docSize} numberOfLines={1}>
+                      {formatSize(Number(doc.sizeBytes ?? 0))}
+                    </Text>
+                  </View>
+                  {openingDoc === id ? (
+                    <ActivityIndicator size="small" color={palette.navy} />
+                  ) : (
+                    <Icon name="eye" size={14} color={palette.navy} />
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
-
-          <View style={styles.docCard}>
-            <IconWell
-              icon="receipt"
-              size={26}
-              iconSize={14}
-              backgroundColor={palette.goldTint}
-              color={palette.gold}
-              borderRadius={radius.md}
-            />
-            <View style={styles.docBody}>
-              <Text style={styles.docName}>Invoice</Text>
-              <Text style={styles.docSize}>1.1 MB</Text>
-            </View>
-            <Icon name="eye" size={14} color={palette.slate500} />
+        ) : (
+          /*
+           * Said plainly rather than drawn as two documents that do not exist.
+           * An approver needs to know the e-way bill is missing — that is a
+           * reason to hold the booking, not a blank to skip past.
+           */
+          <View style={styles.docEmpty}>
+            <Icon name="file-text" size={14} color={palette.slate400} />
+            <Text style={styles.docEmptyText}>
+              No documents attached to this booking yet.
+            </Text>
           </View>
-        </View>
+        )}
 
         {/* Assign vehicle */}
         <Text style={styles.section}>ASSIGN VEHICLE</Text>
         <Card padding={11}>
           <Select
-            options={VEHICLES}
+            label="Vehicle"
+            options={vehicleOptions}
             value={vehicle}
             onChange={setVehicle}
+            placeholder={
+              fleet.loading
+                ? 'Loading vehicles…'
+                : vehicleOptions.length
+                  ? 'Select a vehicle'
+                  : 'No vehicle is free right now'
+            }
             marginBottom={10}
           />
 
@@ -250,9 +587,17 @@ export const BookingReviewScreen: React.FC = () => {
         <Text style={[styles.section, styles.sectionGap]}>ASSIGN DRIVER</Text>
         <Card padding={11} marginBottom={0}>
           <Select
-            options={DRIVERS}
+            label="Driver"
+            options={driverOptions}
             value={driver}
             onChange={setDriver}
+            placeholder={
+              roster.loading
+                ? 'Loading drivers…'
+                : driverOptions.length
+                  ? 'Select a driver'
+                  : 'No driver is on duty right now'
+            }
             marginBottom={10}
           />
 
@@ -291,19 +636,37 @@ export const BookingReviewScreen: React.FC = () => {
           gap={4}
           color={palette.red}
           borderColor={palette.redSoft}
-          onPress={navigation.goBack}
+          disabled={busy}
+          onPress={reject}
         />
         <Button
-          label="Approve & Dispatch"
+          label={busy ? 'Working…' : 'Approve & Dispatch'}
           variant="gold"
           icon="check-circle-2"
           flex={1.8}
           padding={10}
           fontSize={10.5}
           gap={4}
-          onPress={navigation.goBack}
+          loading={busy}
+          // Nothing to approve with until both are chosen; the API requires
+          // a vehicleId and a driverId and refuses the request without them.
+          disabled={busy || !vehicle || !driver}
+          onPress={() => approve()}
         />
       </Footer>
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        tone={dialog?.tone}
+        icon={dialog?.icon}
+        title={dialog?.title ?? ''}
+        message={dialog?.message}
+        confirmLabel={dialog?.confirmLabel}
+        cancelLabel={dialog?.cancelLabel}
+        busy={busy}
+        onConfirm={() => dialog?.onConfirm()}
+        onCancel={closeDialog}
+      />
     </Screen>
   );
 };
@@ -398,9 +761,35 @@ const styles = StyleSheet.create({
     marginTop: s(2),
   },
 
-  docGrid: { flexDirection: 'row', gap: s(8), marginTop: s(12), marginBottom: s(12) },
-  docCard: {
+  /* Wraps: a booking can carry more than the two the mock drew. */
+  docGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: s(8),
+    marginTop: s(12),
+    marginBottom: s(12),
+  },
+  docCardPressed: { opacity: 0.75 },
+  docEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(8),
+    marginTop: s(12),
+    marginBottom: s(12),
+    padding: s(11),
+    backgroundColor: palette.surfaceAlt,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.border,
+  },
+  docEmptyText: {
+    ...font(9, '600', { color: palette.slate500 }),
     flex: 1,
+  },
+  docCard: {
+    /* `minWidth` so two fit a row and a third wraps rather than crushing. */
+    flexGrow: 1,
+    minWidth: '46%',
     flexDirection: 'row',
     alignItems: 'center',
     gap: s(6),

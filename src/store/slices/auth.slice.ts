@@ -1,6 +1,6 @@
 import { createAsyncThunk, createSlice, PayloadAction } from '@reduxjs/toolkit';
 
-import { authService, MOCK_OWNER } from '@services/auth.service';
+import { authService } from '@services/auth.service';
 import type { OwnerProfile } from '@apptypes/index';
 
 type AuthState = {
@@ -56,10 +56,6 @@ const authSlice = createSlice({
     setMobile(state, action: PayloadAction<string>) {
       state.mobile = action.payload;
     },
-    /** The mock signs the owner straight in so every screen has a profile. */
-    hydrateMockOwner(state) {
-      state.profile = MOCK_OWNER;
-    },
   },
   extraReducers: builder => {
     builder
@@ -96,5 +92,5 @@ const authSlice = createSlice({
   },
 });
 
-export const { setMobile, hydrateMockOwner } = authSlice.actions;
+export const { setMobile } = authSlice.actions;
 export default authSlice.reducer;

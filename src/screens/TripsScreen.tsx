@@ -10,6 +10,7 @@ import {
   Card,
   Content,
   Icon,
+  ListState,
   RouteView,
   Screen,
 } from '@components/index';
@@ -18,6 +19,9 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { tripService } from '@services/fleet.service';
+import type { AdminTrip } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 18 — Trips List.
@@ -43,49 +47,63 @@ type TripRow = {
   tab: Tab;
 };
 
-const TRIPS: TripRow[] = [
-  {
-    id: 'TR-2026-8836',
-    reference: '#TR-2026-8836',
-    pickup: 'Visakhapatnam Port',
-    drop: 'Sanathnagar, Hyderabad',
-    rail: palette.gold,
-    status: 'IN TRANSIT',
-    pill: 'navy',
-    driverLine: 'Ramesh K · AP 31 XX 1234',
-    distance: '128/620 KM · 21%',
-    progress: 21,
-    tab: 'transit',
-  },
-  {
-    id: 'TR-2026-8829',
-    reference: '#TR-2026-8829',
-    pickup: 'Kompally',
-    drop: 'Kadapa',
-    rail: palette.gold,
-    status: 'IN TRANSIT',
-    pill: 'navy',
-    driverLine: 'Prakash R · AP 05 CH 9912',
-    distance: '42/305 KM · 14%',
-    progress: 14,
-    tab: 'transit',
-  },
-  {
-    id: 'TR-2026-8842',
-    reference: '#TR-2026-8842',
-    pickup: 'Kompally, Hyderabad',
-    drop: 'Vijayawada',
-    rail: palette.red,
-    status: 'AT PICKUP',
-    pill: 'red',
-    loadingNote: 'Manoj K · Loading in progress',
-    tab: 'transit',
-  },
-];
+/**
+ * A trip as the API sends it, turned into the row this screen draws.
+ *
+ * Replaces a literal list under a header claiming "18 in transit · 1,302
+ * total" against a book of seventeen trips.
+ */
+const TAB_FOR_STATUS: Record<string, Tab> = {
+  IN_TRANSIT: 'transit',
+  SCHEDULED: 'scheduled',
+  DELIVERED: 'delivered',
+  CANCELLED: 'cancelled',
+};
 
-const TABS: Array<[Tab, string]> = [
-  ['transit', 'Transit 18'],
-  ['scheduled', 'Scheduled 12'],
+function toRow(trip: AdminTrip): TripRow {
+  const status = String(trip.status ?? '').toUpperCase();
+  const booking = (trip.booking ?? {}) as {
+    pickupPlace?: string;
+    dropPlace?: string;
+    material?: string;
+  };
+
+  const driver = trip.driver as { user?: { name?: string } } | null;
+  const vehicle = trip.vehicle as { registration?: string } | null;
+
+  const distanceKm = Number(trip.distanceKm ?? 0);
+  const coveredKm = Number(trip.coveredKm ?? 0);
+  const inTransit = status === 'IN_TRANSIT';
+
+  return {
+    id: String(trip.id),
+    reference: `#${trip.reference ?? ''}`,
+    pickup: String(booking.pickupPlace ?? '—'),
+    drop: String(booking.dropPlace ?? '—'),
+    // A running trip is the one worth pulling the eye to.
+    rail: inTransit ? palette.gold : palette.navy,
+    status: inTransit ? 'IN TRANSIT' : 'AT PICKUP',
+    pill: inTransit ? 'navy' : 'red',
+    driverLine: [driver?.user?.name, vehicle?.registration]
+      .filter(Boolean)
+      .join(' · ') || undefined,
+    distance: distanceKm
+      ? `${coveredKm} / ${distanceKm} KM`
+      : undefined,
+    // Guarded: a trip whose distance was never recorded would divide by zero
+    // and hand the bar a NaN, which renders as a full bar rather than none.
+    progress: distanceKm > 0
+      ? Math.min(100, Math.round((coveredKm / distanceKm) * 100))
+      : undefined,
+    loadingNote: booking.material ? String(booking.material) : undefined,
+    tab: TAB_FOR_STATUS[status] ?? 'scheduled',
+  };
+}
+
+/** Labels are built from the API's own tally — see `tabsWithCounts`. */
+const TAB_TITLES: Array<[Tab, string]> = [
+  ['transit', 'Transit'],
+  ['scheduled', 'Scheduled'],
   ['delivered', 'Delivered'],
   ['cancelled', 'Cancelled'],
 ];
@@ -97,9 +115,16 @@ export const TripsScreen: React.FC = () => {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('transit');
 
+  const { data, loading, error, refetch } = useApi(
+    () => tripService.page({ limit: 100 }),
+    [],
+  );
+
+  const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
+
   const visible = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return TRIPS.filter(trip => {
+    return rows.filter(trip => {
       const inTab = trip.tab === tab;
       if (!term) {
         return inTab;
@@ -111,7 +136,31 @@ export const TripsScreen: React.FC = () => {
           (trip.loadingNote ?? '').toLowerCase().includes(term))
       );
     });
-  }, [query, tab]);
+  }, [query, rows, tab]);
+
+  const counts = data?.meta?.counts;
+  const total = data?.meta?.total ?? rows.length;
+  const inTransit = counts?.inTransit ?? rows.filter(r => r.tab === 'transit').length;
+
+  /*
+   * Tab labels carry the API's counts, falling back to counting the rows in
+   * hand. A count of zero still shows: "Cancelled 0" is information, whereas a
+   * bare "Cancelled" leaves the operator wondering whether it failed to load.
+   */
+  const tabsWithCounts = useMemo(() => {
+    const byTab: Record<Tab, number> = {
+      transit: counts?.inTransit ?? rows.filter(r => r.tab === 'transit').length,
+      scheduled:
+        counts?.scheduled ?? rows.filter(r => r.tab === 'scheduled').length,
+      delivered:
+        counts?.delivered ?? rows.filter(r => r.tab === 'delivered').length,
+      cancelled:
+        counts?.cancelled ?? rows.filter(r => r.tab === 'cancelled').length,
+    };
+    return TAB_TITLES.map(
+      ([key, title]) => [key, `${title} ${byTab[key]}`] as [Tab, string],
+    );
+  }, [counts, rows]);
 
   const openTrip = useCallback(
     (id: string) => navigation.navigate('TripDetails', { tripId: id }),
@@ -122,7 +171,7 @@ export const TripsScreen: React.FC = () => {
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Trips"
-        subtitle="18 in transit · 1,302 total"
+        subtitle={`${inTransit} in transit · ${total} total`}
         showBack
         onBackPress={navigation.goBack}
       />
@@ -142,7 +191,7 @@ export const TripsScreen: React.FC = () => {
       </View>
 
       <View style={styles.tabs}>
-        {TABS.map(([key, label]) => (
+        {tabsWithCounts.map(([key, label]) => (
           <Pressable
             key={key}
             onPress={() => setTab(key)}
@@ -158,6 +207,16 @@ export const TripsScreen: React.FC = () => {
       </View>
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
+        <ListState
+          loading={loading}
+          error={error}
+          empty={visible.length === 0}
+          what="trips"
+          emptyIcon="package-search"
+          emptyHint={query.trim() ? 'Nothing matches that search.' : undefined}
+          onRetry={refetch}
+        />
+
         {visible.map(trip => (
           <Card
             key={trip.id}

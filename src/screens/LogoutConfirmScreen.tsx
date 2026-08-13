@@ -1,7 +1,8 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
   BottomSheet,
@@ -17,6 +18,7 @@ import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
+import type { RootStackParamList } from '@navigation/types';
 
 /**
  * Screen 27 — Logout Confirm.
@@ -27,11 +29,44 @@ import { s } from '@theme/metrics';
  */
 export const LogoutConfirmScreen: React.FC = () => {
   const navigation = useNavigation();
+  /* The root stack, not this sheet's — `Auth` lives one level up. */
+  const rootNavigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const dispatch = useAppDispatch();
 
-  const confirm = useCallback(() => {
-    dispatch(logout());
-  }, [dispatch]);
+  const [busy, setBusy] = useState(false);
+
+  /**
+   * Signs out, and actually leaves.
+   *
+   * This dispatched the thunk and stopped there. The token was cleared and the
+   * navigator — a plain stack with a fixed `initialRouteName`, not one that
+   * watches `isAuthenticated` — never moved, so the operator was left sitting
+   * on the confirmation sheet inside the signed-in stack. Every screen behind
+   * it was now unauthenticated, so going back showed a dashboard whose every
+   * request 401s.
+   *
+   * `reset` rather than `navigate`: the whole signed-in stack has to go, or the
+   * back gesture walks straight into it.
+   *
+   * The reset runs whatever the request did. `authService.logout` already
+   * swallows a failed call and clears the token regardless — a server that
+   * cannot be reached must not be able to keep someone signed in on a device
+   * they are trying to hand over.
+   */
+  const confirm = useCallback(async () => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await dispatch(logout()).unwrap();
+    } catch {
+      // Already handled in the service; the reset below is what matters.
+    } finally {
+      rootNavigation.reset({ index: 0, routes: [{ name: 'Auth' }] });
+    }
+  }, [busy, dispatch, rootNavigation]);
 
   return (
     <Screen backgroundColor={palette.screenBg}>

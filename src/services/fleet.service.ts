@@ -187,6 +187,20 @@ export const vehicleService = {
     );
     return data;
   },
+  /**
+   * A signed link to one of this truck's papers (RC, insurance, fitness, PUC).
+   *
+   * Separate from `documentService.downloadUrl`: those are the shipment scans
+   * in the `Document` table, while a vehicle's papers hang off the vehicle and
+   * are served by the fleet routes.
+   */
+  documentUrl: async (id: string): Promise<string> => {
+    const { data } = await apiClient.get<{ url: string; name: string }>(
+      `/vehicles/documents/${id}/download`,
+    );
+    return data.url;
+  },
+
   remove: (id: string) => apiClient.delete(`/vehicles/${id}`),
 };
 
@@ -199,15 +213,54 @@ export const customerService = {
 export const tripService = {
   page: (params?: Record<string, unknown>) => pageOf<AdminTrip>('/trips', params),
   list: (params?: Record<string, unknown>) => listOf<AdminTrip>('/trips', params),
-  live: () => listOf<AdminTrip>('/trips/live'),
+  live: () => listOf<LiveTrip>('/trips/live'),
   get: (id: string) => oneOf<AdminTrip>(`/trips/${id}`),
   tracking: (id: string) => listOf<Record<string, unknown>>(`/trips/${id}/tracking`),
+};
+
+/**
+ * What `/trips/live` answers — a projection, not a whole trip.
+ *
+ * Typed separately from `AdminTrip` because it is a different shape: the
+ * office's live map needs the plate, the driver and the last fix, and none of
+ * the booking detail a trip carries. Typing it as `AdminTrip` meant every
+ * field arrived as `unknown` and the screen could not read one without a cast.
+ */
+export type LiveTrip = {
+  tripId: string;
+  /** The truck, so Vehicle Details can find its running trip. */
+  vehicleId?: string;
+  reference?: string;
+  status?: string;
+  registration?: string;
+  driver?: string;
+  route?: string;
+  distanceKm?: number;
+  coveredKm?: number;
+  /** Null until the driver's app has reported at least once. */
+  location?: { lat: number; lng: number } | null;
+  lastPingAt?: string | null;
 };
 
 export const documentService = {
   list: (params?: Record<string, unknown>) =>
     listOf<AdminDocument>('/documents', params),
   get: (id: string) => oneOf<AdminDocument>(`/documents/${id}`),
+
+  /**
+   * A link the phone can open for one stored document.
+   *
+   * `GET /documents/:id/download` answers with a *signed* link rather than the
+   * stored path: `/uploads/:name` is guarded, and the system viewer this is
+   * handed to sends no bearer token. The signature authorises that one file
+   * for an hour, which is what makes opening it possible at all.
+   */
+  downloadUrl: async (id: string): Promise<string> => {
+    const { data } = await apiClient.get<{ url: string; name: string }>(
+      `/documents/${id}/download`,
+    );
+    return data.url;
+  },
 };
 
 export const notificationService = {

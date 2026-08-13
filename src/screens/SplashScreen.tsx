@@ -19,6 +19,9 @@ import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import { authService } from '@services/auth.service';
 import { session } from '@services/storage';
+import { connectRealtime } from '@services/realtime';
+import { registerForPush } from '@services/push';
+import { ApiError } from '@services/api.client';
 import type { AuthStackParamList, RootStackParamList } from '@navigation/types';
 
 /**
@@ -65,12 +68,42 @@ export const SplashScreen: React.FC = () => {
       }
       try {
         await authService.getProfile();
+        /*
+         * A resumed session never passes through sign-in, so this is the only
+         * place the socket gets opened for someone who was already logged in —
+         * which is most launches.
+         */
+        connectRealtime();
+        /* A resumed session is most launches — the token still has to be current. */
+        registerForPush().catch(() => undefined);
         return true;
-      } catch {
-        // Expired, revoked, or the account is gone. Clear it so the next
-        // launch does not retry a token already known to be dead.
-        session.clear();
-        return false;
+      } catch (error) {
+        /*
+         * Only the server gets to say a session is over.
+         *
+         * This used to clear storage on *any* failure, which meant an
+         * unreachable API — a dropped tunnel, a laptop asleep, a lift with no
+         * signal — destroyed a perfectly good login and made the owner sign in
+         * again. A network error is the app failing to ask the question, not
+         * an answer of "no".
+         *
+         * 401/403 is the answer of "no": expired, revoked from another device,
+         * or the account deactivated. That, and only that, clears the token.
+         */
+        const status = error instanceof ApiError ? error.status : undefined;
+        if (status === 401 || status === 403) {
+          session.clear();
+          return false;
+        }
+
+        /*
+         * Anything else — offline, timed out, the API returning 500 — leaves
+         * the token where it is and lets them through. It has not been
+         * rejected, and every screen behind here reports its own failure with
+         * a retry, which is a far better place to find out the server is down
+         * than a login form that will not accept anyone either.
+         */
+        return true;
       }
     })();
   }

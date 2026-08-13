@@ -1,13 +1,15 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 
-import { AppHeader, Content, Icon, Screen } from '@components/index';
+import { AppHeader, Content, Icon, ListState, Screen } from '@components/index';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
+import { notificationService } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 5 — Notifications.
@@ -34,64 +36,73 @@ type Item = {
   callAction?: boolean;
 };
 
-const TODAY: Item[] = [
-  {
-    id: 'n1',
-    title: 'New Booking Received',
-    body: 'Sri Sai Traders · #ST-2026-8842 · Vizag → Hyd',
-    time: '2 min ago',
-    icon: 'package-plus',
-    tone: 'gold',
-    unread: true,
-    bookingActions: true,
-  },
-  {
-    id: 'n2',
-    title: 'Trip Assigned',
-    body: '#TR-2026-8842 → Manoj K (AP 39 TR 4522)',
-    time: '12 min ago',
-    icon: 'check-circle-2',
-    tone: 'navy',
-    unread: true,
-  },
-  {
-    id: 'n3',
-    title: 'Trip Started',
-    body: 'Ramesh K started #TR-2026-8836',
-    time: '18 min ago',
-    icon: 'play',
-    tone: 'plain',
-  },
-  {
-    id: 'n4',
-    title: 'Driver Went Offline',
-    body: 'Suresh M · AP 39 TR 4522',
-    time: '32 min ago',
-    icon: 'wifi-off',
-    tone: 'red',
-    unread: true,
-    callAction: true,
-  },
-  {
-    id: 'n5',
-    title: 'Vehicle Reached Pickup',
-    body: 'AP 05 CH 9912 at Kompally',
-    time: '45 min ago',
-    icon: 'map-pin',
-    tone: 'plain',
-  },
-];
+/**
+ * A notification as the API sends it, turned into the row this screen draws.
+ *
+ * Replaces two literal lists — TODAY and YESTERDAY — under a header that
+ * always claimed twelve unread, whatever had actually been read.
+ */
+const ICON_FOR: Record<string, IconName> = {
+  BOOKINGS: 'package-plus',
+  TRIPS: 'truck',
+  DRIVERS: 'user-check',
+  DELIVERY: 'package-check',
+  GPS: 'wifi-off',
+  WALLET: 'credit-card',
+  SYSTEM: 'bell-ring',
+};
 
-const YESTERDAY: Item[] = [
-  {
-    id: 'n6',
-    title: 'Delivery Completed',
-    body: '#TR-2026-8812 · POD uploaded',
-    time: 'Yesterday, 3:42 PM',
-    icon: 'package-check',
-    tone: 'plain',
-  },
-];
+/** How long ago, in the shorthand the rows already used. */
+function agoFrom(iso: string): string {
+  const when = new Date(iso).getTime();
+  if (Number.isNaN(when)) {
+    return '';
+  }
+  const minutes = Math.max(0, Math.round((Date.now() - when) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+type Bucket = 'today' | 'yesterday' | 'earlier';
+
+/** Which day-group a row belongs to, compared at local midnight. */
+function bucketOf(iso: string): Bucket {
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) {
+    return 'earlier';
+  }
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  if (when >= midnight) {
+    return 'today';
+  }
+  const yesterday = new Date(midnight);
+  yesterday.setDate(yesterday.getDate() - 1);
+  return when >= yesterday ? 'yesterday' : 'earlier';
+}
+
+function toItem(row: Record<string, unknown>): Item & { bucket: Bucket } {
+  const category = String(row.category ?? 'SYSTEM').toUpperCase();
+  const unread = !row.readAt;
+  const createdAt = String(row.createdAt ?? '');
+
+  return {
+    id: String(row.id),
+    title: String(row.title ?? ''),
+    body: String(row.detail ?? ''),
+    time: agoFrom(createdAt),
+    icon: ICON_FOR[category] ?? 'bell-ring',
+    // Unread earns colour; anything already read settles back to plain, so the
+    // list reads as a queue rather than a wall of highlights.
+    tone: unread ? (category === 'BOOKINGS' ? 'gold' : 'navy') : 'plain',
+    unread,
+    bucket: bucketOf(createdAt),
+  };
+}
 
 const TONE = {
   gold: {
@@ -199,24 +210,66 @@ const Row: React.FC<{ item: Item }> = ({ item }) => {
 export const NotificationsScreen: React.FC = () => {
   const navigation = useNavigation();
 
+  const { data, loading, error, refetch } = useApi(
+    () => notificationService.list(),
+    [],
+  );
+
+  const items = useMemo(
+    () => (data ?? []).map(row => toItem(row as Record<string, unknown>)),
+    [data],
+  );
+
+  const unread = items.filter(item => item.unread).length;
+
+  // Only groups with something in them get a heading — an empty "YESTERDAY"
+  // above nothing reads as a list that failed to load.
+  const groups = useMemo(
+    () =>
+      (
+        [
+          ['TODAY', 'today'],
+          ['YESTERDAY', 'yesterday'],
+          ['EARLIER', 'earlier'],
+        ] as Array<[string, Bucket]>
+      )
+        .map(([heading, bucket]) => ({
+          heading,
+          rows: items.filter(item => item.bucket === bucket),
+        }))
+        .filter(group => group.rows.length > 0),
+    [items],
+  );
+
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Notifications"
-        subtitle="12 unread"
+        subtitle={unread > 0 ? `${unread} unread` : 'All caught up'}
         showBack
         onBackPress={navigation.goBack}
       />
 
       <Content padding={12} safeBottom>
-        <Text style={styles.group}>TODAY</Text>
-        {TODAY.map(item => (
-          <Row key={item.id} item={item} />
-        ))}
+        <ListState
+          loading={loading}
+          error={error}
+          empty={items.length === 0}
+          what="notifications"
+          emptyIcon="bell-ring"
+          emptyHint="You will see bookings, trips and alerts here."
+          onRetry={refetch}
+        />
 
-        <Text style={[styles.group, styles.groupGap]}>YESTERDAY</Text>
-        {YESTERDAY.map(item => (
-          <Row key={item.id} item={item} />
+        {groups.map((group, index) => (
+          <React.Fragment key={group.heading}>
+            <Text style={[styles.group, index > 0 && styles.groupGap]}>
+              {group.heading}
+            </Text>
+            {group.rows.map(item => (
+              <Row key={item.id} item={item} />
+            ))}
+          </React.Fragment>
         ))}
       </Content>
     </Screen>

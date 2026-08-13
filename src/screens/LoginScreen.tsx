@@ -9,6 +9,7 @@ import { useAppDispatch } from '@store/index';
 import { sendOtp, setMobile as setStoreMobile } from '@store/slices/auth.slice';
 import { authService } from '@services/auth.service';
 import { useTopInset } from '@hooks/useTopInset';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -116,6 +117,21 @@ export const LoginScreen: React.FC = () => {
         end={{ x: 1, y: 1 }}
         style={styles.field}
       >
+        {/*
+          The safe area is applied inside the gradient, not around it.
+
+          Wrapping the gradient would inset the *paint* too, leaving a band of
+          plain navy above the notch and below the home indicator instead of
+          the field running edge to edge — which is the one thing this screen's
+          background is doing.
+
+          `edges` names only the bottom. The top is handled by `useTopInset`,
+          which floors against `StatusBar.currentHeight`: the context reports 0
+          on Android when the activity is not edge-to-edge, and on the first
+          frame before insets are dispatched, so the heading would jump under
+          the status bar for a moment on every cold start.
+        */}
+        <SafeAreaView edges={['bottom']} style={styles.safe}>
         {/* Logo + heading */}
         <View style={[styles.head, { paddingTop: topInset + s(16) }]}>
           <View style={styles.logoCard}>
@@ -244,6 +260,7 @@ export const LoginScreen: React.FC = () => {
             </View>
           </LinearGradient>
         </View>
+        </SafeAreaView>
       </LinearGradient>
     </Screen>
   );
@@ -251,6 +268,8 @@ export const LoginScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   field: { flex: 1 },
+  /* Fills the gradient; the inset comes from `SafeAreaView`'s own padding. */
+  safe: { flex: 1 },
   failure: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -347,7 +366,13 @@ const styles = StyleSheet.create({
   reset: font(10, '800', { color: palette.red }),
   resetDivider: font(10, '800', { color: palette.slate400 }),
 
-  trustWrap: { marginTop: 'auto', marginHorizontal: s(16), marginBottom: s(16) },
+  /*
+   * `marginBottom` is breathing room, not clearance. The home indicator and
+   * Android's gesture bar are handled by the safe area above, so this no longer
+   * has to double as both — it was 16 against a 34pt indicator, which put the
+   * card under it.
+   */
+  trustWrap: { marginTop: 'auto', marginHorizontal: s(16), marginBottom: s(10) },
   trust: {
     flexDirection: 'row',
     alignItems: 'center',

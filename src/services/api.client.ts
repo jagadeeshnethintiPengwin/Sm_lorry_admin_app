@@ -1,6 +1,7 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import { API_ORIGIN as CONFIGURED_ORIGIN } from '@env';
 import { session } from './storage';
+import { apiLog } from './api.log';
 
 /**
  * Axios instance shared by every service. Screens never call the network
@@ -24,11 +25,31 @@ import { session } from './storage';
  */
 const LOCAL_API = CONFIGURED_ORIGIN ?? 'http://localhost:4000';
 
-export const API_BASE_URL = __DEV__
-  ? `${LOCAL_API}/admin/v1`
-  : 'https://api.simhadritransport.com/admin/v1';
+/**
+ * The deployed API, used by every build that is not a debug build.
+ *
+ * Hardcoded rather than read from `.env`: a release must not depend on a file
+ * that is git-ignored and absent on a build machine, and an app that silently
+ * shipped pointing at a developer's laptop is worse than one that fails to
+ * build. Change it here and in the sibling apps together — see the deployment
+ * note in the repo README.
+ */
+const PRODUCTION_API = 'https://api.simhadritransport.com';
+
+/**
+ * The server root, kept separate so the role prefix is written once.
+ *
+ * Exported because the realtime socket connects to the origin, not to
+ * `/admin/v1` — the gateway lives at `/realtime` alongside the REST surfaces.
+ */
+export const API_ORIGIN = __DEV__ ? LOCAL_API : PRODUCTION_API;
+
+export const API_BASE_URL = `${API_ORIGIN}/admin/v1`;
 
 const DEFAULT_TIMEOUT = 20_000;
+
+/** An in-flight request, stamped so its duration can be reported. */
+type TimedRequest = InternalAxiosRequestConfig & { startedAt?: number };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -80,6 +101,10 @@ apiClient.interceptors.request.use(
     } else {
       delete config.headers['X-Anonymous'];
     }
+
+    // Stamped here so the response side can report how long the call took.
+    (config as TimedRequest).startedAt = Date.now();
+    apiLog.request(config.method ?? 'get', config.url ?? '', config.data);
     return config;
   },
 );
@@ -158,7 +183,17 @@ const messageFrom = (
 
 /** Normalises every failure into `ApiError` so callers handle one shape. */
 apiClient.interceptors.response.use(
-  response => response,
+  response => {
+    const started = (response.config as TimedRequest).startedAt;
+    apiLog.response(
+      response.config.method ?? 'get',
+      response.config.url ?? '',
+      response.status,
+      started ? Date.now() - started : 0,
+      response.data,
+    );
+    return response;
+  },
   async (error: AxiosError) => {
     /*
      * An expired token is renewed and the request replayed, once.
@@ -168,8 +203,17 @@ apiClient.interceptors.response.use(
      * never reaches here — it goes out on a bare axios instance.
      */
     const request = error.config as
-      | (InternalAxiosRequestConfig & { retried?: boolean })
+      | (InternalAxiosRequestConfig & { retried?: boolean; startedAt?: number })
       | undefined;
+
+    apiLog.failure(
+      request?.method ?? 'get',
+      request?.url ?? '',
+      error.response?.status ?? 0,
+      request?.startedAt ? Date.now() - request.startedAt : 0,
+      (error.response?.data as { message?: string } | undefined)?.message ??
+        error.message,
+    );
 
     if (
       error.response?.status === 401 &&
@@ -204,14 +248,15 @@ apiClient.interceptors.response.use(
   },
 );
 
-/**
- * The reference design ships without a backend. Services fall back to the
- * fixtures in `mock.data.ts` so every screen renders exactly the content shown
- * in `admin-mobile-app.html`. Flip to `false` once the API is live.
+/*
+ * `USE_MOCK_DATA` and `mockDelay` lived here.
+ *
+ * They belonged to the reference design, which shipped without a backend and
+ * served fixtures so every screen rendered the content from the HTML mock. The
+ * flag had already been switched off, which left the branches behind them dead
+ * — but present, and dead code that pretends to be a working fallback is worse
+ * than none: it reads as an offline mode nobody maintains, and it is where a
+ * screen quietly goes when its request fails.
+ *
+ * Every screen now reads from the API and says so when it cannot.
  */
-/** Flipped off now that the API is live; set true to work offline. */
-export const USE_MOCK_DATA = false;
-
-/** Simulates latency so loading states are exercised in development. */
-export const mockDelay = <T>(value: T, ms = 350): Promise<T> =>
-  new Promise(resolve => setTimeout(() => resolve(value), ms));

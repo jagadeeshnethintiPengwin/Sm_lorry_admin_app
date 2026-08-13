@@ -1,6 +1,44 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      Android 13 (API 33) made notifications opt-in. Without this permission
+      declared *and* granted at runtime, FCM delivers the message and the system
+      silently drops the tray notification — which reads as "push does not
+      work" with nothing in any log to say why.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      What this app needs to see of the rest of the phone.
+
+      Since Android 11 an app is shown only the other apps it declares an
+      interest in. Without this block `Linking.canOpenURL` reports false for
+      every http(s) link even with a browser installed, and an intent may find
+      no handler where one exists — which is how "no app on this phone can open
+      that file" reached drivers holding a phone with Chrome on it.
+
+      Declared as capabilities rather than package names, so any browser, any
+      PDF viewer and any dialler qualifies.
+    -->
+    <queries>
+        <!-- Opening a signed document link: scans and delivery photos. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <!-- Calling the office or a customer from a trip. -->
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+    </queries>
+
 
     <application
       android:name=".MainApplication"
@@ -26,5 +64,39 @@
           <meta-data
         android:name="com.google.android.geo.API_KEY"
         android:value="${MAPS_API_KEY}" />
+
+      <!--
+        Where FCM posts a notification for a backgrounded or closed app.
+
+        The system delivers it without waking JavaScript, so nothing in the app
+        chooses a channel — this meta-data is the only thing that does. Naming a
+        channel that does not exist is the same as naming none: Android 8+
+        drops the notification. `MainApplication.onCreate` creates this id.
+      -->
+      <!--
+        `tools:replace` is required, not stylistic:
+        `@react-native-firebase/messaging` ships its own manifest declaring the
+        same name with an empty value, and the merger treats two different
+        values for one attribute as an error rather than picking the app's.
+      -->
+      <meta-data
+        android:name="com.google.firebase.messaging.default_notification_channel_id"
+        android:value="smt_default"
+        tools:replace="android:value" />
+
+      <!--
+        A silhouette, not the launcher icon. Android 5+ renders a notification
+        icon as a mask: any colour in it becomes a white square in the status
+        bar, which is the classic "my push shows a blank box" report.
+      -->
+      <meta-data
+        android:name="com.google.firebase.messaging.default_notification_icon"
+        android:resource="@drawable/ic_notification" />
+
+      <!-- Same again: the library declares this one as `@color/white`. -->
+      <meta-data
+        android:name="com.google.firebase.messaging.default_notification_color"
+        android:resource="@color/notification_gold"
+        tools:replace="android:resource" />
 </application>
 </manifest>

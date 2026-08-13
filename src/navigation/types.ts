@@ -5,7 +5,15 @@ export type TabParamList = {
   Home: undefined;
   Vehicles: undefined;
   Drivers: undefined;
-  Bookings: undefined;
+  /**
+   * `tab` opens the list on a particular bucket.
+   *
+   * Approving a booking moves it out of Pending, and the operator was returned
+   * to Pending — where it is now correctly absent — with nothing to show that
+   * the approval had worked. The decision screen names the bucket its outcome
+   * landed in, so the result is on screen when they arrive.
+   */
+  Bookings: { tab?: 'pending' | 'approved' | 'rejected' } | undefined;
   Menu: undefined;
 };
 

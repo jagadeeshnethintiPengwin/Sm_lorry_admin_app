@@ -9,6 +9,7 @@ import {
   Card,
   Content,
   Icon,
+  ListState,
   Screen,
   Select,
 } from '@components/index';
@@ -18,6 +19,9 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { customerService } from '@services/fleet.service';
+import type { AdminCustomer } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 13 — Customers List.
@@ -44,68 +48,53 @@ type CustomerRow = {
   tripCount: number;
 };
 
-const CUSTOMERS: CustomerRow[] = [
-  {
-    id: 'c1',
-    company: 'Sri Sai Traders',
-    contact: 'Rajesh Kumar · +91 98765 43210',
-    trips: '28 trips · Since 2024',
-    tripsTone: 'gold',
-    pill: 'ACTIVE',
-    initials: 'SS',
-    tileBg: palette.navyTint,
-    tileColor: palette.navy,
-    tripCount: 28,
-  },
-  {
-    id: 'c2',
-    company: 'Krishna Industries',
-    contact: 'Suresh M · +91 90140 22883',
-    trips: '42 trips · Since 2023',
-    tripsTone: 'gold',
-    pill: 'ACTIVE',
-    initials: 'KI',
-    tileBg: palette.goldTint,
-    tileColor: palette.gold,
-    tripCount: 42,
-  },
-  {
-    id: 'c3',
-    company: 'Anand Logistics',
-    contact: 'Anand P · +91 99880 12233',
-    trips: '15 trips · Since 2025',
-    tripsTone: 'gold',
-    pill: 'ACTIVE',
-    initials: 'AL',
-    tileBg: palette.redTint,
-    tileColor: palette.red,
-    tripCount: 15,
-  },
-  {
-    id: 'c4',
-    company: 'Vardhan Enterprises',
-    contact: 'Vardhan R · +91 87651 44322',
-    trips: '62 trips · Since 2022',
-    tripsTone: 'gold',
-    pill: 'ACTIVE',
-    initials: 'VE',
-    tileBg: palette.navyTint,
-    tileColor: palette.navy,
-    tripCount: 62,
-  },
-  {
-    id: 'c5',
-    company: 'Ganga Traders',
-    contact: 'Ganga R · +91 88767 22988',
-    trips: '3 trips · Since 2026',
-    tripsTone: 'muted',
-    pill: 'NEW',
-    initials: 'GT',
-    tileBg: palette.redTint,
-    tileColor: palette.red,
-    tripCount: 3,
-  },
-];
+/**
+ * A customer as the API sends it, turned into the row this screen draws.
+ *
+ * Replaces a literal list under a header that claimed "124 accounts · +8 this
+ * month" — numbers no record ever backed, on an account book of five.
+ */
+const initialsOf = (name: string): string =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0]?.toUpperCase() ?? '')
+    .join('') || '?';
+
+function toRow(customer: AdminCustomer): CustomerRow {
+  const company = String(customer.company ?? 'Customer');
+  const user = (customer.user ?? {}) as { name?: string; mobile?: string };
+  const contactName = String(customer.contactName ?? user.name ?? '');
+
+  // `_count.bookings` is what the API joins on; a customer with none is new.
+  const counts = (customer._count ?? {}) as { bookings?: number };
+  const trips = Number(counts.bookings ?? 0);
+
+  const since = customer.since ? new Date(String(customer.since)) : null;
+  const sinceYear =
+    since && !Number.isNaN(since.getTime()) ? since.getFullYear() : null;
+
+  return {
+    id: String(customer.id),
+    company,
+    contact: [contactName, user.mobile].filter(Boolean).join(' · '),
+    trips: [
+      `${trips} trip${trips === 1 ? '' : 's'}`,
+      sinceYear ? `Since ${sinceYear}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    tripsTone: trips > 0 ? 'gold' : 'muted',
+    // "Verified" is the account book's own flag; anyone without a booking yet
+    // is genuinely new rather than merely quiet.
+    pill: trips > 0 ? 'ACTIVE' : 'NEW',
+    initials: initialsOf(company),
+    tileBg: trips > 0 ? palette.navyTint : palette.goldTint,
+    tileColor: trips > 0 ? palette.navy : palette.gold,
+    tripCount: trips,
+  };
+}
 
 export const CustomersScreen: React.FC = () => {
   const navigation =
@@ -114,15 +103,22 @@ export const CustomersScreen: React.FC = () => {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('recent');
 
+  const { data, loading, error, refetch } = useApi(
+    () => customerService.page({ limit: 100 }),
+    [],
+  );
+
+  const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
+
   const visible = useMemo(() => {
     const term = query.trim().toLowerCase();
     const filtered = term
-      ? CUSTOMERS.filter(
+      ? rows.filter(
           item =>
             item.company.toLowerCase().includes(term) ||
             item.contact.toLowerCase().includes(term),
         )
-      : [...CUSTOMERS];
+      : [...rows];
 
     if (sort === 'name') {
       return filtered.sort((a, b) => a.company.localeCompare(b.company));
@@ -131,7 +127,10 @@ export const CustomersScreen: React.FC = () => {
       return filtered.sort((a, b) => b.tripCount - a.tripCount);
     }
     return filtered;
-  }, [query, sort]);
+  }, [query, rows, sort]);
+
+  const total = data?.meta?.total ?? rows.length;
+  const active = rows.filter(row => row.tripCount > 0).length;
 
   const openCustomer = useCallback(
     (id: string) => navigation.navigate('CustomerDetails', { customerId: id }),
@@ -142,7 +141,7 @@ export const CustomersScreen: React.FC = () => {
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Customers"
-        subtitle="124 accounts · +8 this month"
+        subtitle={`${total} account${total === 1 ? '' : 's'} · ${active} active`}
         showBack
         onBackPress={navigation.goBack}
       />
@@ -163,7 +162,7 @@ export const CustomersScreen: React.FC = () => {
 
       {/* Sort strip */}
       <View style={styles.sortStrip}>
-        <Text style={styles.sortLabel}>ALL CUSTOMERS · 124</Text>
+        <Text style={styles.sortLabel}>ALL CUSTOMERS · {total}</Text>
         <Select
           options={SORTS}
           value={sort}
@@ -175,6 +174,18 @@ export const CustomersScreen: React.FC = () => {
       </View>
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
+        <ListState
+          loading={loading}
+          error={error}
+          empty={visible.length === 0}
+          what="customers"
+          emptyIcon="building-2"
+          emptyHint={
+            query.trim() ? 'Nothing matches that search.' : undefined
+          }
+          onRetry={refetch}
+        />
+
         {visible.map(customer => (
           <Card
             key={customer.id}
@@ -190,8 +201,14 @@ export const CustomersScreen: React.FC = () => {
               </View>
 
               <View style={styles.body}>
-                <Text style={styles.company}>{customer.company}</Text>
-                <Text style={styles.contact}>{customer.contact}</Text>
+                {/* Real company names run long; they ellipsize rather than
+                    reflow the card. */}
+                <Text style={styles.company} numberOfLines={1}>
+                  {customer.company}
+                </Text>
+                <Text style={styles.contact} numberOfLines={1}>
+                  {customer.contact}
+                </Text>
 
                 <View style={styles.footer}>
                   <Text

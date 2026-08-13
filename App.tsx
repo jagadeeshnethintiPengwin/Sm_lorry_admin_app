@@ -10,6 +10,8 @@ import React from 'react';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+import { NotificationBanner } from '@components/common/NotificationBanner';
 import { Provider as ReduxProvider } from 'react-redux';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -34,6 +36,13 @@ const App = () => (
         <SafeAreaProvider>
           <ThemeProvider>
             <RootNavigator />
+            {/*
+              Outside the navigator, so a notification arriving during a shift
+              slides in over whatever screen is open — including a modal or a
+              bottom sheet. Inside it, the banner would be clipped by the
+              current screen and would unmount on every navigation.
+            */}
+            <NotificationBanner />
           </ThemeProvider>
         </SafeAreaProvider>
       </QueryClientProvider>

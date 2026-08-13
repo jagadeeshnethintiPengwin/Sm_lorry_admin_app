@@ -1,0 +1,21 @@
+<!--
+  The status-bar icon.
+
+  A flat white silhouette on transparent, because Android 5+ treats a
+  notification icon as a mask: every non-transparent pixel is painted with the
+  system's tint, so a full-colour launcher icon arrives as a solid white
+  square. A lorry, drawn in the one shape that survives that.
+
+  Vector rather than a set of PNG densities: one file, sharp on every screen,
+  and nothing to regenerate when it changes.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+  <path
+      android:fillColor="#FFFFFF"
+      android:pathData="M3,6.5C3,5.67 3.67,5 4.5,5H13C13.83,5 14.5,5.67 14.5,6.5V8H17.2C17.7,8 18.16,8.25 18.44,8.66L20.74,12.1C20.91,12.35 21,12.64 21,12.94V16.5C21,17.33 20.33,18 19.5,18H18.5C18.5,19.38 17.38,20.5 16,20.5C14.62,20.5 13.5,19.38 13.5,18H9.5C9.5,19.38 8.38,20.5 7,20.5C5.62,20.5 4.5,19.38 4.5,18H4.5C3.67,18 3,17.33 3,16.5V6.5ZM14.5,10V13.5H19V13.05L16.9,10H14.5ZM7,16.75C6.31,16.75 5.75,17.31 5.75,18C5.75,18.69 6.31,19.25 7,19.25C7.69,19.25 8.25,18.69 8.25,18C8.25,17.31 7.69,16.75 7,16.75ZM16,16.75C15.31,16.75 14.75,17.31 14.75,18C14.75,18.69 15.31,19.25 16,19.25C16.69,19.25 17.25,18.69 17.25,18C17.25,17.31 16.69,16.75 16,16.75Z" />
+</vector>

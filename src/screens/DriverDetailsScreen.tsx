@@ -1,8 +1,12 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
+import { driverService, tripService } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 import {
   AppHeader,
@@ -69,20 +73,50 @@ const KYC: KycRow[] = [
 export const DriverDetailsScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<RouteProp<RootStackParamList, 'DriverDetails'>>();
+  const { driverId } = route.params;
+
+  /*
+   * The screen never read its own route parameter.
+   *
+   * Everything below was a literal — a fixed phone number, `vehicleId: 'v1'`,
+   * `tripId: 'TR-2026-8836'` — so whichever driver you opened, the call button
+   * rang one number and the vehicle card opened an id that does not exist,
+   * which is a Vehicle Details screen that 404s and never loads.
+   */
+  const { data } = useApi(() => driverService.get(driverId), [driverId]);
+
+  const vehicle = (data?.vehicle ?? null) as {
+    id?: string;
+    registration?: string;
+  } | null;
+  const mobile = (data?.user as { mobile?: string } | undefined)?.mobile;
+
+  /* The trip this driver is on, if any — matched on the live board. */
+  const live = useApi(() => tripService.live(), []);
+  const trip = useMemo(
+    () => (live.data ?? []).find(t => t.registration === vehicle?.registration) ?? null,
+    [live.data, vehicle?.registration],
+  );
 
   const call = useCallback(() => {
-    Linking.openURL('tel:+919876543210').catch(() => undefined);
-  }, []);
+    if (mobile) {
+      Linking.openURL(`tel:${mobile}`).catch(() => undefined);
+    }
+  }, [mobile]);
 
-  const openTrip = useCallback(
-    () => navigation.navigate('TripDetails', { tripId: 'TR-2026-8836' }),
-    [navigation],
-  );
+  const openTrip = useCallback(() => {
+    if (trip) {
+      navigation.navigate('TripDetails', { tripId: trip.tripId });
+    }
+  }, [navigation, trip]);
 
-  const openVehicle = useCallback(
-    () => navigation.navigate('VehicleDetails', { vehicleId: 'v1' }),
-    [navigation],
-  );
+  const openVehicle = useCallback(() => {
+    /* No truck assigned means nothing to open — better inert than a 404. */
+    if (vehicle?.id) {
+      navigation.navigate('VehicleDetails', { vehicleId: vehicle.id });
+    }
+  }, [navigation, vehicle]);
 
   /** Editing reuses the Add Driver form — same fields, prefilled upstream. */
   const editDriver = useCallback(

@@ -9,7 +9,7 @@ import Animated, {
 
 import { palette } from '@theme/colors';
 import { radius } from '@theme/radius';
-import { s } from '@theme/metrics';
+import { hp, s, wp } from '@theme/metrics';
 
 /**
  * Centred dialog.
@@ -24,18 +24,60 @@ export type CenterModalProps = {
   children: React.ReactNode;
   /** Tapping the scrim dismisses. */
   dismissOnBackdropPress?: boolean;
-  /** Horizontal inset from the screen edges. */
+  /**
+   * Horizontal inset from the screen edges, in design px.
+   *
+   * Omit it. The default below is a share of the display, which is what a
+   * dialog margin should be, and every dialog looking the same is the point of
+   * having one component. Pass a number only when a particular dialog genuinely
+   * needs a different width.
+   */
   inset?: number;
   padding?: number;
   style?: StyleProp<ViewStyle>;
 };
+
+/**
+ * The side margin every centred dialog gets.
+ *
+ * Proportional rather than scaled from the mock, so a narrow handset and a
+ * large one show the same *visual* margin instead of the same pixel count. On a
+ * 1080px display this is 86px a side.
+ *
+ * It lives here rather than in each dialog's stylesheet because it had been
+ * written out twice already and the two copies had drifted — the upload dialog
+ * at 86px, the picker beside it at 54px.
+ */
+const SIDE_MARGIN = wp(8);
+
+/**
+ * Past this a dialog stops reading as a dialog and becomes a page, so the
+ * proportional margin gives way to a fixed ceiling.
+ *
+ * Inert on a phone: the cap works out wider than the screen, so the margin
+ * above is what decides the width. It only engages on a tablet — where, being
+ * a stretched item that has hit a maximum, the card sits against the leading
+ * edge rather than centred. Worth knowing before this ships to one; on the
+ * handsets this app targets it never applies.
+ */
+const MAX_WIDTH = s(360);
+
+/**
+ * A ceiling on the card's height, so a dialog can never grow past the screen.
+ *
+ * Without one, a long list pushes the card taller than the display and the
+ * footer action goes off the bottom — the control the operator needs to get
+ * out being the first thing lost. Contents that can grow are expected to
+ * shrink inside this; the picker's option list does exactly that.
+ */
+const MAX_HEIGHT = hp(85);
 
 const CenterModalComponent: React.FC<CenterModalProps> = ({
   visible,
   onClose,
   children,
   dismissOnBackdropPress = true,
-  inset = 24,
+  inset,
   padding = 18,
   style,
 }) => (
@@ -64,7 +106,9 @@ const CenterModalComponent: React.FC<CenterModalProps> = ({
         style={[
           styles.card,
           {
-            marginHorizontal: s(inset),
+            marginHorizontal: inset === undefined ? SIDE_MARGIN : s(inset),
+            maxWidth: MAX_WIDTH,
+            maxHeight: MAX_HEIGHT,
             padding: s(padding),
           },
           style,
@@ -84,7 +128,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   card: {
-    width: '100%',
+    /*
+     * Stretched, not `width: '100%'`.
+     *
+     * A percentage width resolves against the scrim's content box — the whole
+     * screen — and margins are then applied *outside* it, so the card measured
+     * `100% + 2 × margin` and simply overflowed. Every side margin set on it
+     * was inert: the card drew full-bleed whatever the number said, which is
+     * why raising it from 5% to 8% changed nothing on screen.
+     *
+     * `stretch` fills the cross axis *minus* the margins, which is what a side
+     * margin is meant to mean.
+     */
+    alignSelf: 'stretch',
     backgroundColor: palette.white,
     borderRadius: radius.sheet,
     // Lifted well off the scrim so the dialog reads as floating.

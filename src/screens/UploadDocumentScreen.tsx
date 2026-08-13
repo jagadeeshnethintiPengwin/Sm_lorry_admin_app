@@ -23,7 +23,7 @@ import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
-import { s } from '@theme/metrics';
+import { s, wp } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
 
 /**
@@ -84,7 +84,14 @@ export const UploadDocumentScreen: React.FC = () => {
         onBackPress={navigation.goBack}
       />
 
-      <Content>
+      {/*
+        A wider gutter than the 12 design-px `Content` defaults to.
+
+        This screen is a single column of full-width cards, so the default
+        padding left them almost touching the edges. Only the horizontal side
+        is overridden — the vertical rhythm between cards is unchanged.
+      */}
+      <Content contentStyle={styles.page}>
         {/* Document type hero */}
         <LinearGradient
           colors={gradients.navyHero as unknown as string[]}
@@ -350,6 +357,8 @@ export const UploadDocumentScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  /** Page gutter, as a share of the display rather than a scaled mock value. */
+  page: { paddingHorizontal: wp(5) },
   hero: {
     padding: s(14),
     borderRadius: radius.xl,

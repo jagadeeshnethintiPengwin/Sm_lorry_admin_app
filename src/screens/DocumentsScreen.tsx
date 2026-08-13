@@ -1,7 +1,23 @@
-import React, { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  Share,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
+
+import {
+  documentService,
+  type AdminDocument,
+} from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
+import { openExternalUrl } from '@utils/openExternalUrl';
 
 import {
   AppHeader,
@@ -31,6 +47,7 @@ type DocFile = {
   id: string;
   name: string;
   meta: string;
+  hasFile: boolean;
   icon: IconName;
   bg: string;
   color: string;
@@ -47,51 +64,98 @@ type TripGroup = {
   files: DocFile[];
 };
 
-const GROUPS: TripGroup[] = [
-  {
-    id: 'g1',
-    reference: '#TR-2026-8842',
-    route: 'Vizag → Hyderabad · Sri Sai Traders',
-    status: 'IN TRANSIT',
-    attached: 4,
-    total: 5,
-    tab: 'transit',
-    files: [
-      {
-        id: 'waybill',
-        name: 'Waybill.pdf',
-        meta: '342 KB · Just now',
-        icon: 'file-text',
-        bg: palette.navyTint,
-        color: palette.navy,
-      },
-      {
-        id: 'eway',
-        name: 'E-way Bill.pdf',
-        meta: '234 KB · Valid till 21 May',
-        icon: 'scroll-text',
-        bg: palette.goldTint,
-        color: palette.gold,
-      },
-      {
-        id: 'invoice',
-        name: 'Invoice.pdf',
-        meta: '1.1 MB · 20 May',
-        icon: 'receipt',
-        bg: palette.navyTint,
-        color: palette.navy,
-      },
-      {
-        id: 'lr',
-        name: 'LR.pdf',
-        meta: '456 KB · 20 May',
-        icon: 'file-check',
-        bg: palette.goldTint,
-        color: palette.gold,
-      },
-    ],
-  },
-];
+/** How each kind of paperwork is drawn. Keyed by the API's `kind`. */
+const DOC_STYLE: Record<string, { icon: IconName; bg: string; color: string }> = {
+  WAYBILL: { icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+  EWAY: { icon: 'scroll-text', bg: palette.goldTint, color: palette.gold },
+  INVOICE: { icon: 'receipt', bg: palette.navyTint, color: palette.navy },
+  LR: { icon: 'file-check', bg: palette.goldTint, color: palette.gold },
+  POD: { icon: 'package-check', bg: palette.redTint, color: palette.red },
+  OTHER: { icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+};
+
+/** `2004170` -> `2.0 MB`. The API stores bytes; nobody reads bytes. */
+function formatSize(bytes: number): string {
+  if (!bytes) {
+    return 'Unknown size';
+  }
+  return bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** `2026-08-13T06:26:00Z` -> `13 Aug`. */
+function formatDay(iso?: string): string {
+  if (!iso) {
+    return '';
+  }
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+
+/**
+ * The archive, grouped by the shipment each document belongs to.
+ *
+ * `GROUPS` was three invented trips carrying eleven invented files — the same
+ * "Waybill.pdf · 342 KB · Just now" shown to every office — while
+ * `/documents` served the real archive the whole time. Documents filed
+ * against nothing in particular are collected under one heading rather than
+ * dropped, because an unattached scan is exactly the one somebody needs to
+ * find and re-file.
+ */
+function toGroups(documents: AdminDocument[]): TripGroup[] {
+  const byRef = new Map<string, TripGroup>();
+
+  for (const doc of documents) {
+    const trip = (doc.trip as { reference?: string } | null)?.reference;
+    const booking = (doc.booking as { reference?: string } | null)?.reference;
+    const reference = trip ?? booking ?? null;
+    const key = reference ?? '__unfiled__';
+
+    let group = byRef.get(key);
+    if (!group) {
+      group = {
+        id: key,
+        reference: reference ? `#${reference}` : 'Not filed against a trip',
+        route: reference
+          ? trip
+            ? 'Trip paperwork'
+            : 'Booking paperwork'
+          : 'Uploaded without a trip or booking',
+        status: trip ? 'TRIP' : booking ? 'BOOKING' : 'UNFILED',
+        attached: 0,
+        total: 0,
+        tab: trip ? 'transit' : booking ? 'delivered' : 'incomplete',
+        files: [],
+      };
+      byRef.set(key, group);
+    }
+
+    const kind = String(doc.kind ?? 'OTHER');
+    const style = DOC_STYLE[kind] ?? DOC_STYLE.OTHER;
+    group.files.push({
+      id: String(doc.id),
+      name: String(doc.name ?? kind),
+      meta: [formatSize(Number(doc.sizeBytes ?? 0)), formatDay(String(doc.createdAt ?? ''))]
+        .filter(Boolean)
+        .join(' · '),
+      icon: style.icon,
+      bg: style.bg,
+      color: style.color,
+      /* A row with no stored file cannot be opened — say so on the row. */
+      hasFile: Boolean(doc.fileUrl),
+    });
+  }
+
+  for (const group of byRef.values()) {
+    group.attached = group.files.filter(f => f.hasFile).length;
+    group.total = group.files.length;
+  }
+
+  return [...byRef.values()];
+}
 
 const TABS: Array<[Tab, string, boolean]> = [
   ['transit', 'In Transit', false],
@@ -105,9 +169,66 @@ export const DocumentsScreen: React.FC = () => {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('transit');
 
+  /* The real archive. Re-read on focus so a fresh upload shows up. */
+  const archive = useApi(() => documentService.list({ limit: 100 }), []);
+  const groups = useMemo(
+    () => toGroups(archive.data ?? []),
+    [archive.data],
+  );
+
+  const [openingDoc, setOpeningDoc] = useState<string | null>(null);
+
+  /**
+   * Opens one, through a signed link.
+   *
+   * Both buttons on every row were `Pressable`s with no `onPress` — they
+   * rendered, they pressed, and nothing happened, on a screen whose entire
+   * purpose is getting at the paperwork.
+   */
+  const viewDocument = useCallback(async (id: string) => {
+    setOpeningDoc(id);
+    try {
+      await openExternalUrl(await documentService.downloadUrl(id));
+    } catch (failure) {
+      Alert.alert(
+        'Could not open it',
+        failure instanceof Error
+          ? failure.message
+          : 'That document is not available.',
+      );
+    } finally {
+      setOpeningDoc(null);
+    }
+  }, []);
+
+  /**
+   * Hands the link to the system share sheet.
+   *
+   * Distinct from viewing on purpose: the two buttons used to be
+   * indistinguishable because neither did anything. Sharing is what "download"
+   * means on a phone — the sheet offers Save to Files, mail, WhatsApp — and it
+   * needs no extra library to do it.
+   */
+  const shareDocument = useCallback(async (id: string, name: string) => {
+    setOpeningDoc(id);
+    try {
+      const url = await documentService.downloadUrl(id);
+      await Share.share({ url, message: `${name}\n${url}` });
+    } catch (failure) {
+      Alert.alert(
+        'Could not share it',
+        failure instanceof Error
+          ? failure.message
+          : 'That document is not available.',
+      );
+    } finally {
+      setOpeningDoc(null);
+    }
+  }, []);
+
   const visible = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return GROUPS.filter(group => {
+    return groups.filter(group => {
       const inTab = group.tab === tab;
       if (!term) {
         return inTab;
@@ -115,10 +236,13 @@ export const DocumentsScreen: React.FC = () => {
       return (
         inTab &&
         (group.reference.toLowerCase().includes(term) ||
-          group.route.toLowerCase().includes(term))
+          group.route.toLowerCase().includes(term) ||
+          // Searching by file name matters more here than by trip: an
+          // operator hunting "e-way" does not know which trip it was on.
+          group.files.some(file => file.name.toLowerCase().includes(term)))
       );
     });
-  }, [query, tab]);
+  }, [groups, query, tab]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -230,25 +354,57 @@ export const DocumentsScreen: React.FC = () => {
                   </View>
 
                   <View style={styles.fileActions}>
+                    {/*
+                      Dimmed rather than hidden when there is no stored file:
+                      the row is still a record that the paperwork is expected,
+                      and an operator needs to see that it is missing.
+                    */}
                     <Pressable
+                      onPress={() => viewDocument(file.id)}
+                      disabled={!file.hasFile || openingDoc !== null}
                       accessibilityRole="button"
-                      accessibilityLabel={`View ${file.name}`}
+                      accessibilityLabel={
+                        file.hasFile
+                          ? `View ${file.name}`
+                          : `${file.name} — no file stored`
+                      }
+                      accessibilityState={{
+                        disabled: !file.hasFile,
+                        busy: openingDoc === file.id,
+                      }}
                       style={({ pressed }) => [
                         styles.iconBtn,
-                        pressed && styles.pressed,
+                        !file.hasFile && styles.iconBtnDisabled,
+                        pressed && file.hasFile && styles.pressed,
                       ]}
                     >
-                      <Icon name="eye" size={13} color={palette.navy} />
+                      {openingDoc === file.id ? (
+                        <ActivityIndicator size="small" color={palette.navy} />
+                      ) : (
+                        <Icon
+                          name="eye"
+                          size={13}
+                          color={file.hasFile ? palette.navy : palette.slate400}
+                        />
+                      )}
                     </Pressable>
                     <Pressable
+                      onPress={() => shareDocument(file.id, file.name)}
+                      disabled={!file.hasFile || openingDoc !== null}
                       accessibilityRole="button"
-                      accessibilityLabel={`Download ${file.name}`}
+                      accessibilityLabel={`Share ${file.name}`}
+                      accessibilityState={{ disabled: !file.hasFile }}
                       style={({ pressed }) => [
                         styles.iconBtn,
-                        pressed && styles.pressed,
+                        !file.hasFile && styles.iconBtnDisabled,
+                        pressed && file.hasFile && styles.pressed,
                       ]}
                     >
-                      <Icon name="download" size={13} color={palette.navy} />
+                      <Icon
+                        name="download"
+                        size={13}
+                        color={file.hasFile ? palette.navy : palette.slate400}
+                      />
                     </Pressable>
                   </View>
                 </View>
@@ -373,6 +529,7 @@ const styles = StyleSheet.create({
   fileName: font(10, '800', { color: palette.navy }),
   fileMeta: font(8, '400', { color: palette.slate500 }),
   fileActions: { flexDirection: 'row', gap: s(4) },
+  iconBtnDisabled: { opacity: 0.45 },
   iconBtn: {
     width: s(26),
     height: s(26),

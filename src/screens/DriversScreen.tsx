@@ -8,6 +8,7 @@ import {
   AppHeader,
   BlinkDot,
   Card,
+  AssignVehicleDialog,
   Content,
   Icon,
   ListState,
@@ -19,7 +20,7 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
-import { driverService } from '@services/fleet.service';
+import { driverService, vehicleService } from '@services/fleet.service';
 import type { AdminDriver } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
 
@@ -141,6 +142,50 @@ export const DriversScreen: React.FC = () => {
     counts !== undefined
       ? (counts.online ?? 0) + (counts.onTrip ?? 0)
       : rows.filter(r => r.online).length;
+
+  /*
+   * Which driver is being given a lorry, if any.
+   *
+   * Held as the whole row rather than an id so the dialog can name them, and
+   * so closing it needs no lookup.
+   */
+  const [assignTo, setAssignTo] = useState<DriverRow | null>(null);
+  const [assigning, setAssigning] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+
+  const closeAssign = useCallback(() => {
+    setAssignTo(null);
+    setAssignError(null);
+  }, []);
+
+  /**
+   * Puts the chosen lorry under this driver.
+   *
+   * The assignment lives on the vehicle — `Vehicle.driverId` — so this is a
+   * write to the vehicle, not to the driver. Refetching afterwards is what
+   * moves the row from "No vehicle assigned" to naming the truck.
+   */
+  const assignVehicle = useCallback(
+    async (vehicleId: string) => {
+      if (!assignTo) {
+        return;
+      }
+      setAssigning(true);
+      setAssignError(null);
+      try {
+        await vehicleService.update(vehicleId, { driverId: assignTo.id });
+        closeAssign();
+        refetch();
+      } catch (caught) {
+        setAssignError(
+          caught instanceof Error ? caught.message : 'Could not assign',
+        );
+      } finally {
+        setAssigning(false);
+      }
+    },
+    [assignTo, closeAssign, refetch],
+  );
 
   const openDriver = useCallback(
     (id: string) => navigation.navigate('DriverDetails', { driverId: id }),
@@ -308,6 +353,7 @@ export const DriversScreen: React.FC = () => {
                     </View>
                   ) : (
                     <Pressable
+                      onPress={() => setAssignTo(driver)}
                       accessibilityRole="button"
                       accessibilityLabel={`Assign vehicle to ${driver.name}`}
                       style={({ pressed }) => [
@@ -341,6 +387,15 @@ export const DriversScreen: React.FC = () => {
           <Icon name="plus" size={18} color={palette.navy} />
         </LinearGradient>
       </Pressable>
+      <AssignVehicleDialog
+        visible={assignTo !== null}
+        driverName={assignTo?.name ?? ''}
+        busy={assigning}
+        error={assignError}
+        onAssign={assignVehicle}
+        onClose={closeAssign}
+      />
+
     </Screen>
   );
 };
