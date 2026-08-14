@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { AppHeader, Content, Icon, ListState, Screen } from '@components/index';
 import { palette } from '@theme/colors';
@@ -10,6 +11,8 @@ import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
 import { notificationService } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
+import { notificationTarget } from '@utils/notificationTarget';
+import type { RootStackParamList } from '@navigation/types';
 
 /**
  * Screen 5 — Notifications.
@@ -30,10 +33,17 @@ type Item = {
   icon: IconName;
   tone: Tone;
   unread?: boolean;
-  /** Booking rows carry the Reject / Review pair. */
-  bookingActions?: boolean;
-  /** Offline rows carry the red Call Driver button. */
-  callAction?: boolean;
+  /**
+   * Where this notification leads, as the server wrote it — `/bookings/SMB186`.
+   *
+   * Two booleans used to sit here instead, `bookingActions` and `callAction`,
+   * which drew a Reject / Review & Assign pair and a red Call Driver button.
+   * Neither was ever set on any row, so the buttons never rendered — and the
+   * call one dialled a fixed seed number rather than any driver. The rows had
+   * no press handler of their own either, so the whole screen was inert: an
+   * owner tapping "Booking Received" got nothing.
+   */
+  link?: string;
 };
 
 /**
@@ -100,6 +110,7 @@ function toItem(row: Record<string, unknown>): Item & { bucket: Bucket } {
     // list reads as a queue rather than a wall of highlights.
     tone: unread ? (category === 'BOOKINGS' ? 'gold' : 'navy') : 'plain',
     unread,
+    link: typeof row.link === 'string' ? row.link : undefined,
     bucket: bucketOf(createdAt),
   };
 }
@@ -139,12 +150,33 @@ const TONE = {
   },
 };
 
-const Row: React.FC<{ item: Item }> = ({ item }) => {
+const Row: React.FC<{ item: Item; onOpen: (item: Item) => void }> = ({
+  item,
+  onOpen,
+}) => {
   const tone = TONE[item.tone];
   const railed = item.tone !== 'plain';
 
+  /*
+   * Only rows that lead somewhere are pressable.
+   *
+   * A notification whose link this app has no screen for — one addressed to a
+   * driver or a customer — stays as text rather than becoming a button that
+   * does nothing when tapped.
+   */
+  const target = notificationTarget(item.link);
+
+  const Wrapper = target ? Pressable : View;
+
   return (
-    <View
+    <Wrapper
+      {...(target
+        ? {
+            onPress: () => onOpen(item),
+            accessibilityRole: 'button' as const,
+            accessibilityLabel: `${item.title}. ${item.body}`,
+          }
+        : {})}
       style={[
         styles.row,
         tone.wrap,
@@ -163,36 +195,7 @@ const Row: React.FC<{ item: Item }> = ({ item }) => {
 
         <Text style={[styles.text, { color: tone.body }]}>{item.body}</Text>
 
-        {item.bookingActions ? (
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Reject booking"
-              style={({ pressed }) => [styles.reject, pressed && styles.pressed]}
-            >
-              <Text style={styles.rejectText}>Reject</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Review and assign booking"
-              style={({ pressed }) => [styles.review, pressed && styles.pressed]}
-            >
-              <Text style={styles.reviewText}>Review &amp; Assign</Text>
-            </Pressable>
-          </View>
-        ) : null}
 
-        {item.callAction ? (
-          <Pressable
-            onPress={() => Linking.openURL('tel:+919876543210').catch(() => undefined)}
-            accessibilityRole="button"
-            accessibilityLabel="Call driver"
-            style={({ pressed }) => [styles.call, pressed && styles.pressed]}
-          >
-            <Icon name="phone" size={10} color={palette.white} />
-            <Text style={styles.callText}>Call Driver</Text>
-          </Pressable>
-        ) : null}
 
         <Text
           style={[
@@ -203,12 +206,13 @@ const Row: React.FC<{ item: Item }> = ({ item }) => {
           {item.time}
         </Text>
       </View>
-    </View>
+    </Wrapper>
   );
 };
 
 export const NotificationsScreen: React.FC = () => {
-  const navigation = useNavigation();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const { data, loading, error, refetch } = useApi(
     () => notificationService.list(),
@@ -221,6 +225,91 @@ export const NotificationsScreen: React.FC = () => {
   );
 
   const unread = items.filter(item => item.unread).length;
+
+  /*
+   * Marked locally the moment it is pressed, then confirmed.
+   *
+   * The request is a round trip, and a header that keeps saying "12 unread"
+   * while it completes reads as a button that did nothing — so the operator
+   * presses it again. Clearing on press and re-reading afterwards means the
+   * screen answers immediately and still ends up agreeing with the server.
+   */
+  /**
+   * Opens what the notification is about.
+   *
+   * The link is a web path, because the same row is read in the browser panel;
+   * `notificationTarget` turns it into a screen and its parameters. A row whose
+   * link this app has no screen for never becomes pressable in the first place,
+   * so the null branch here is belt and braces rather than a live case.
+   */
+  const open = useCallback(
+    (item: Item) => {
+      const target = notificationTarget(item.link);
+      if (!target) {
+        return;
+      }
+      switch (target.screen) {
+        case 'TripDetails':
+          navigation.navigate('TripDetails', target.params);
+          break;
+        case 'BookingReview':
+          navigation.navigate('BookingReview', target.params);
+          break;
+        case 'VehicleDetails':
+          navigation.navigate('VehicleDetails', target.params);
+          break;
+        case 'PodViewer':
+          navigation.navigate('PodViewer', target.params);
+          break;
+      }
+    },
+    [navigation],
+  );
+
+  const [clearing, setClearing] = useState(false);
+  const [clearedAll, setClearedAll] = useState(false);
+
+  const markAllRead = useCallback(async () => {
+    if (clearing || unread === 0) {
+      return;
+    }
+    setClearing(true);
+    setClearedAll(true);
+    try {
+      await notificationService.markAllRead();
+    } catch {
+      /*
+       * Put it back. A failed call that left the screen looking cleared would
+       * hide notifications the office has not actually seen — and the badge on
+       * the dashboard, which re-reads from the server, would disagree with it
+       * on the next visit.
+       */
+      setClearedAll(false);
+    } finally {
+      setClearing(false);
+      /* Re-read, so `readAt` comes from the server rather than this screen. */
+      refetch();
+    }
+  }, [clearing, refetch, unread]);
+
+  /* What the header reports, allowing for a clear that is still in flight. */
+  const shownUnread = clearedAll ? 0 : unread;
+
+  /*
+   * The rows, agreeing with the header.
+   *
+   * Without this the subtitle says "All caught up" while every row still
+   * carries its unread dot and gold tone — the screen contradicting itself for
+   * as long as the request takes. Once the refetch lands this is a no-op,
+   * because the server's `readAt` says the same thing.
+   */
+  const shown = useMemo(
+    () =>
+      clearedAll
+        ? items.map(item => ({ ...item, unread: false, tone: 'plain' as const }))
+        : items,
+    [clearedAll, items],
+  );
 
   // Only groups with something in them get a heading — an empty "YESTERDAY"
   // above nothing reads as a list that failed to load.
@@ -235,26 +324,38 @@ export const NotificationsScreen: React.FC = () => {
       )
         .map(([heading, bucket]) => ({
           heading,
-          rows: items.filter(item => item.bucket === bucket),
+          rows: shown.filter(item => item.bucket === bucket),
         }))
         .filter(group => group.rows.length > 0),
-    [items],
+    [shown],
   );
 
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Notifications"
-        subtitle={unread > 0 ? `${unread} unread` : 'All caught up'}
+        subtitle={
+          shownUnread > 0 ? `${shownUnread} unread` : 'All caught up'
+        }
         showBack
         onBackPress={navigation.goBack}
+        /*
+         * Only offered when there is something to clear.
+         *
+         * A tick that is always there gives no signal, and pressing it on an
+         * already-clear feed is a request that changes nothing. It appears
+         * with the first unread notification and goes when the last is read.
+         */
+        rightIcon={shownUnread > 0 ? 'check' : undefined}
+        onRightPress={markAllRead}
+        rightAccessibilityLabel={`Mark all ${shownUnread} notifications as read`}
       />
 
       <Content padding={12} safeBottom>
         <ListState
           loading={loading}
           error={error}
-          empty={items.length === 0}
+          empty={shown.length === 0}
           what="notifications"
           emptyIcon="bell-ring"
           emptyHint="You will see bookings, trips and alerts here."
@@ -267,7 +368,7 @@ export const NotificationsScreen: React.FC = () => {
               {group.heading}
             </Text>
             {group.rows.map(item => (
-              <Row key={item.id} item={item} />
+              <Row key={item.id} item={item} onOpen={open} />
             ))}
           </React.Fragment>
         ))}
@@ -314,40 +415,7 @@ const styles = StyleSheet.create({
   },
   text: { ...font(10, '400'), marginTop: s(1) },
 
-  actions: { flexDirection: 'row', gap: s(6), marginTop: s(8) },
-  reject: {
-    flex: 1,
-    paddingVertical: s(5),
-    paddingHorizontal: s(8),
-    backgroundColor: palette.white,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.redSoft,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-  },
-  rejectText: font(9, '800', { color: palette.red }),
-  review: {
-    flex: 1.4,
-    paddingVertical: s(5),
-    paddingHorizontal: s(8),
-    backgroundColor: palette.navy,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-  },
-  reviewText: font(9, '800', { color: palette.white }),
 
-  call: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: s(4),
-    paddingVertical: s(4),
-    paddingHorizontal: s(8),
-    backgroundColor: palette.red,
-    borderRadius: s(5),
-    marginTop: s(6),
-  },
-  callText: font(9, '800', { color: palette.white }),
 
   timeBold: { ...font(9, '800'), marginTop: s(5) },
   timeMedium: { ...font(9, '700'), marginTop: s(5) },

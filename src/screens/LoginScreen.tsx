@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, StyleSheet, Text, TextInput, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -7,7 +7,6 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button, Icon, IndiaFlagMini, Screen } from '@components/index';
 import { useAppDispatch } from '@store/index';
 import { sendOtp, setMobile as setStoreMobile } from '@store/slices/auth.slice';
-import { authService } from '@services/auth.service';
 import { useTopInset } from '@hooks/useTopInset';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { alpha, gradients, palette } from '@theme/colors';
@@ -33,10 +32,7 @@ export const LoginScreen: React.FC = () => {
   const [failure, setFailure] = useState<string | null>(null);
 
   const [mobile, setMobile] = useState('');
-  const [pin, setPin] = useState('');
-  const [pinVisible, setPinVisible] = useState(false);
 
-  const togglePin = useCallback(() => setPinVisible(current => !current), []);
 
   /**
    * Sends the code, and only then moves to the OTP screen.
@@ -61,24 +57,19 @@ export const LoginScreen: React.FC = () => {
 
     try {
       /*
-       * The PIN first, and the OTP only when there is no PIN to try.
+       * One way in: the number, and a code sent to it.
        *
-       * The PIN box was decorative: whatever was typed into it was ignored and
-       * every sign-in went round the OTP loop, so the field asked for a secret
-       * that did nothing. It is now the credential — but an account that has
-       * never set one answers `pinSet: false` rather than failing, and that is
-       * the signal to fall back to exactly the flow that used to run. Nobody
-       * who could sign in yesterday is locked out by the PIN arriving.
+       * The PIN was removed deliberately. Two credentials on one screen meant
+       * two ways to fail and a field most operators left blank, and an owner
+       * who had never set one saw a box asking for a secret that did not
+       * exist. A code sent to the registered number proves the same thing —
+       * possession of that number — without anything to remember, forget or
+       * reset.
+       *
+       * The PIN endpoints are untouched on the server, so this is a change of
+       * front door rather than a demolition: bringing it back is putting the
+       * field on this screen again.
        */
-      if (pin.length === 6) {
-        const attempt = await authService.pinLogin(target, pin);
-        if (attempt.pinSet) {
-          // The session is stored; the splash decides where it leads.
-          navigation.reset({ index: 0, routes: [{ name: 'Splash' }] });
-          return;
-        }
-      }
-
       const result = await dispatch(sendOtp(target)).unwrap();
       navigation.navigate('OtpVerification', {
         mobile: target,
@@ -94,20 +85,7 @@ export const LoginScreen: React.FC = () => {
     } finally {
       setBusy(false);
     }
-  }, [busy, dispatch, mobile, navigation, pin]);
-
-  /** Both recovery routes need the number that is already typed, if any. */
-  const digitsTyped = mobile.replace(/\D/g, '');
-
-  const goForgotPin = useCallback(() => {
-    navigation.navigate('ForgotPin');
-  }, [navigation]);
-
-  const goResetPin = useCallback(() => {
-    navigation.navigate('ResetPin', {
-      mobile: digitsTyped.length === 10 ? digitsTyped : '',
-    });
-  }, [digitsTyped, navigation]);
+  }, [busy, dispatch, mobile, navigation]);
 
   return (
     <Screen backgroundColor={palette.navy}>
@@ -173,29 +151,13 @@ export const LoginScreen: React.FC = () => {
             />
           </View>
 
-          <Text style={styles.label}>OWNER PIN</Text>
-          <View style={[styles.inputRow, styles.pinRow]}>
-            <Icon name="lock" size={16} color={palette.slate500} />
-            <TextInput
-              value={pin}
-              onChangeText={setPin}
-              placeholder="6-digit PIN"
-              placeholderTextColor={palette.slate400}
-              keyboardType="number-pad"
-              maxLength={6}
-              secureTextEntry={!pinVisible}
-              style={styles.pinInput}
-              accessibilityLabel="Owner PIN"
-            />
-            <Pressable
-              onPress={togglePin}
-              accessibilityRole="button"
-              accessibilityLabel={pinVisible ? 'Hide PIN' : 'Show PIN'}
-              hitSlop={s(8)}
-            >
-              <Icon name="eye" size={16} color={palette.slate500} />
-            </Pressable>
-          </View>
+          {/*
+            No PIN field. Signing in is the number and a code sent to it — see
+            `signIn` for why, and for what would bring it back.
+          */}
+          <Text style={styles.hint}>
+            We will text a 6-digit code to this number.
+          </Text>
 
           {failure ? (
             <View style={styles.failure} accessibilityLiveRegion="polite">
@@ -215,32 +177,14 @@ export const LoginScreen: React.FC = () => {
           />
 
           {/*
-            Two ways out, because they answer two different problems: the PIN
-            is forgotten and the number has to be proved another way, or it is
-            known and is simply being changed. The link used to be one, and did
-            nothing at all.
+            No recovery links.
+            
+            They existed to rescue a PIN, and there is no longer a PIN to
+            forget or reset — a code is sent to the registered number every
+            time, so the recovery path and the sign-in path are now the same
+            one. Leaving them would offer a way to fix a credential this screen
+            never asks for.
           */}
-          <View style={styles.resetWrap}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Forgot PIN, reset with a one-time code"
-              onPress={goForgotPin}
-              hitSlop={8}
-            >
-              <Text style={styles.reset}>Forgot PIN?</Text>
-            </Pressable>
-
-            <Text style={styles.resetDivider}>·</Text>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Reset PIN using the current PIN"
-              onPress={goResetPin}
-              hitSlop={8}
-            >
-              <Text style={styles.reset}>Reset PIN</Text>
-            </Pressable>
-          </View>
         </View>
 
         {/* Trust badge */}
@@ -270,6 +214,11 @@ const styles = StyleSheet.create({
   field: { flex: 1 },
   /* Fills the gradient; the inset comes from `SafeAreaView`'s own padding. */
   safe: { flex: 1 },
+  /* Sits where the PIN field was, saying what happens next instead. */
+  hint: {
+    ...font(9, '600', { color: palette.slate500 }),
+    marginBottom: s(12),
+  },
   failure: {
     flexDirection: 'row',
     alignItems: 'center',

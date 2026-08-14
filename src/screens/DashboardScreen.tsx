@@ -246,6 +246,27 @@ export const DashboardScreen: React.FC = () => {
   const stats = useMemo(() => statsOf(summary), [summary]);
   const week = useMemo(() => weekOf(series), [series]);
 
+  /*
+   * The headline over the bars, which the bars themselves already knew.
+   *
+   * It read `128 trips` and `+12% vs last` — fixed text above a chart drawn
+   * from real data, so on a week with nine trips the card said 128. The total
+   * is now summed from the same series the bars come from.
+   *
+   * There is no `+12%`: `/reports/trips-per-day` returns seven days and
+   * nothing before them, so a week-on-week change cannot be computed. How many
+   * of the week's trips are still running can be, and is the more useful
+   * number to an owner looking at today.
+   */
+  const weekTotal = useMemo(
+    () => series.reduce((sum, day) => sum + day.completed + day.active, 0),
+    [series],
+  );
+  const weekActive = useMemo(
+    () => series.reduce((sum, day) => sum + day.active, 0),
+    [series],
+  );
+
   const openNotifications = useCallback(
     () => navigation.navigate('Notifications'),
     [navigation],
@@ -645,9 +666,13 @@ export const DashboardScreen: React.FC = () => {
           <View style={styles.trendHead}>
             <View>
               <Text style={styles.trendLabel}>THIS WEEK</Text>
-              <Text style={styles.trendValue}>128 trips</Text>
+              <Text style={styles.trendValue}>
+                {weekTotal} {weekTotal === 1 ? 'trip' : 'trips'}
+              </Text>
             </View>
-            <Text style={styles.trendDelta}>+12% vs last</Text>
+            <Text style={styles.trendDelta}>
+              {weekActive ? `${weekActive} running` : 'None running'}
+            </Text>
           </View>
 
           <View style={styles.chart}>

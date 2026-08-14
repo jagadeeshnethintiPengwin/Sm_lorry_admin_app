@@ -1,13 +1,15 @@
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback } from 'react';
+import { Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 
 import {
   AppHeader,
   Card,
   Content,
   Icon,
+  ListState,
   PulseGlow,
   RadialGlow,
   RouteView,
@@ -19,6 +21,9 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
+import type { RootStackParamList } from '@navigation/types';
+import { documentService, tripService } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 23 — Proof of Delivery.
@@ -28,32 +33,130 @@ import { s } from '@theme/metrics';
  *   DELIVERY PHOTOS · 3 tiles · RECEIVED BY with a gold check badge ·
  *   TRIP INFO 2×2
  */
-const METRICS = [
-  { value: '620 km', label: 'DISTANCE', gold: false },
-  { value: '18h 42m', label: 'DURATION', gold: false },
-  { value: 'On time', label: 'STATUS', gold: true },
-];
-
-const TRIP_INFO = [
-  { label: 'CUSTOMER', value: 'Krishna Industries' },
-  { label: 'DRIVER', value: 'Ramesh Kumar' },
-  { label: 'VEHICLE', value: 'TS 09 UB 8801' },
-  { label: 'MATERIAL', value: 'Steel · 12.5 T' },
-];
+/** "18h 42m", from two timestamps — or nothing, if the trip never started. */
+const spanOf = (from?: string | null, to?: string | null): string => {
+  if (!from || !to) {
+    return '—';
+  }
+  const mins = Math.max(0, Math.round((new Date(to).getTime() - new Date(from).getTime()) / 60000));
+  const h = Math.floor(mins / 60);
+  return h ? `${h}h ${mins % 60}m` : `${mins}m`;
+};
 
 export const PodViewerScreen: React.FC = () => {
   const navigation = useNavigation();
+  const route = useRoute<RouteProp<RootStackParamList, 'PodViewer'>>();
+  const { tripId } = route.params;
+
+  /*
+   * The delivery, and the photographs taken at it.
+   *
+   * The whole screen was a set of literals: trip #TR-2026-8812, 620 km in
+   * 18h 42m, Krishna Industries, received by Anita Sharma, and two tiles
+   * that were gradients with an icon on them rather than photographs. The
+   * driver app has been uploading real POD photos as trip documents for a
+   * while — nothing had ever asked for them.
+   *
+   * This is the record a payment dispute is settled on, so every figure on it
+   * now comes from the trip it belongs to.
+   */
+  const trip = useApi(() => tripService.get(tripId), [tripId]);
+  const photos = useApi(() => documentService.podPhotos(tripId), [tripId]);
+
+  const record = (trip.data ?? null) as Record<string, any> | null;
+  const booking = record?.booking;
+  const shots = photos.data ?? [];
+
+  const reference: string = record?.reference ?? '—';
+  const deliveredAt: string | null = record?.deliveredAt ?? null;
+  const delivered = record?.status === 'DELIVERED';
+
+  /*
+   * On time against the date the customer was promised.
+   *
+   * `expectedAt` is nullable — an office booking taken by phone often has no
+   * promised slot — and calling a delivery "On time" with nothing to compare
+   * it against is the kind of claim that gets quoted back in a dispute.
+   */
+  const onTime =
+    booking?.expectedAt && deliveredAt
+      ? new Date(deliveredAt).getTime() <= new Date(booking.expectedAt).getTime()
+      : null;
+
+  const metrics = [
+    {
+      label: 'DISTANCE',
+      value: record?.distanceKm ? `${Math.round(Number(record.distanceKm))} km` : '—',
+      gold: false,
+    },
+    {
+      label: 'DURATION',
+      value: spanOf(record?.startedAt, deliveredAt),
+      gold: false,
+    },
+    {
+      label: 'STATUS',
+      value: onTime === null ? (delivered ? 'Delivered' : '—') : onTime ? 'On time' : 'Late',
+      gold: onTime !== false,
+    },
+  ];
+
+  const tripInfo = [
+    { label: 'CUSTOMER', value: booking?.customer?.company ?? booking?.customer?.contactName ?? '—' },
+    { label: 'DRIVER', value: record?.driver?.user?.name ?? '—' },
+    { label: 'VEHICLE', value: record?.vehicle?.registration ?? '—' },
+    {
+      label: 'MATERIAL',
+      value: booking
+        ? [booking.material, booking.weightTons ? `${booking.weightTons} T` : null]
+            .filter(Boolean)
+            .join(' · ')
+        : '—',
+    },
+  ];
+
+  const receiverName: string = record?.receiverName ?? '';
+  const receiverPhone: string = record?.receiverPhone ?? '';
+  const receiverInitials =
+    receiverName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w: string) => w[0]?.toUpperCase() ?? '')
+      .join('') || '—';
+
+  const openPhoto = useCallback(
+    (url: string) => () => {
+      Linking.openURL(url).catch(() => undefined);
+    },
+    [],
+  );
 
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Proof of Delivery"
-        subtitle="#TR-2026-8812"
+        subtitle={reference}
         showBack
         onBackPress={navigation.goBack}
       />
 
       <Content safeBottom>
+        <ListState
+          loading={trip.loading}
+          error={trip.error}
+          empty={!trip.loading && !trip.error && !record}
+          what="proof of delivery"
+          emptyIcon="check"
+          emptyHint="This trip could not be found."
+          onRetry={() => {
+            trip.refetch();
+            photos.refetch();
+          }}
+        />
+
+        {record ? (
+        <>
         {/* Delivered hero */}
         <LinearGradient
           colors={gradients.navyHero as unknown as string[]}
@@ -97,15 +200,34 @@ export const PodViewerScreen: React.FC = () => {
               </LinearGradient>
             </View>
 
-            <Text style={styles.heroKicker}>TRIP #TR-2026-8812</Text>
-            <Text style={styles.heroTitle}>Delivered Successfully</Text>
-            <Text style={styles.heroMeta}>12 May 2026 · 3:42 PM</Text>
+            {/*
+              The trip's own state.
+              
+              This declared "Delivered Successfully" on 12 May 2026 at 3:42 PM
+              regardless — including for a trip still on the road, which is a
+              screen that certifies a delivery that has not happened.
+            */}
+            <Text style={styles.heroKicker}>TRIP {reference}</Text>
+            <Text style={styles.heroTitle}>
+              {delivered ? 'Delivered Successfully' : 'Not delivered yet'}
+            </Text>
+            <Text style={styles.heroMeta}>
+              {deliveredAt
+                ? new Date(deliveredAt).toLocaleString('en-IN', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                  })
+                : (record?.status ?? '—')}
+            </Text>
           </View>
         </LinearGradient>
 
         {/* Metrics */}
         <View style={styles.metrics}>
-          {METRICS.map(metric => (
+          {metrics.map(metric => (
             <View key={metric.label} style={styles.metric}>
               <Text style={metric.gold ? styles.metricValueGold : styles.metricValue}>
                 {metric.value}
@@ -119,61 +241,70 @@ export const PodViewerScreen: React.FC = () => {
         <Text style={styles.section}>ROUTE</Text>
         <Card padding={11}>
           <RouteView
-            pickup="Visakhapatnam Port, Dockyard Rd"
-            drop="Sanathnagar Industrial Area"
+            pickup={booking?.pickupAddress ?? booking?.pickupPlace ?? '—'}
+            drop={booking?.dropAddress ?? booking?.dropPlace ?? '—'}
             pickupLabel="Pickup"
             dropLabel="Drop"
             pickupGap={6}
           />
         </Card>
 
-        {/* Delivery photos */}
+        {/*
+          The photographs the driver took, not two coloured tiles.
+          
+          This section said "DELIVERY PHOTOS · 3" above two gradient rectangles
+          with a package icon and a warehouse icon drawn on them — captioned
+          PACKAGE and UNLOADED, as though the load had been photographed. The
+          driver app uploads the real ones against the trip; they are fetched
+          and shown, and the count is however many there are.
+        */}
         <Text style={[styles.section, styles.sectionGap]}>
-          DELIVERY PHOTOS · 3
+          DELIVERY PHOTOS{shots.length ? ` · ${shots.length}` : ''}
         </Text>
-        <View style={styles.photoGrid}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Package photo"
-            style={({ pressed }) => [styles.photoWrap, pressed && styles.pressed]}
-          >
-            <LinearGradient
-              colors={gradients.navyHero as unknown as string[]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.photo}
-            >
-              <Icon name="package-check" size={24} color={palette.white} />
-              <View style={styles.photoTagDark}>
-                <Text style={styles.photoTagDarkText}>PACKAGE</Text>
-              </View>
-              <View style={styles.expand}>
-                <Icon name="expand" size={11} color={palette.navy} />
-              </View>
-            </LinearGradient>
-          </Pressable>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Unloaded photo"
-            style={({ pressed }) => [styles.photoWrap, pressed && styles.pressed]}
-          >
-            <LinearGradient
-              colors={[palette.goldDark, palette.gold]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.photo}
-            >
-              <Icon name="warehouse" size={24} color={palette.navy} />
-              <View style={styles.photoTagLight}>
-                <Text style={styles.photoTagLightText}>UNLOADED</Text>
-              </View>
-              <View style={styles.expand}>
-                <Icon name="expand" size={11} color={palette.navy} />
-              </View>
-            </LinearGradient>
-          </Pressable>
-        </View>
+        {photos.loading ? (
+          <Card padding={14}>
+            <Text style={styles.noPhotos}>Loading photos…</Text>
+          </Card>
+        ) : !shots.length ? (
+          <Card padding={14}>
+            <Text style={styles.noPhotos}>
+              No delivery photos were uploaded for this trip.
+            </Text>
+          </Card>
+        ) : (
+          <View style={styles.photoGrid}>
+            {shots.map(shot => (
+              <Pressable
+                key={shot.id}
+                onPress={openPhoto(shot.url)}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${shot.name}`}
+                style={({ pressed }) => [
+                  styles.photoWrap,
+                  pressed && styles.pressed,
+                ]}
+              >
+                {/*
+                  A signed link, which is what makes this render at all.
+                  
+                  `<Image>` sends no Authorization header, and `/uploads/:name`
+                  is guarded — the stored `fileUrl` would come back 401 and
+                  draw a grey box. `podPhotos` exchanges each one for a link
+                  that authorises that single file.
+                */}
+                <Image
+                  source={{ uri: shot.url }}
+                  style={styles.photo}
+                  resizeMode="cover"
+                />
+                <View style={styles.expand}>
+                  <Icon name="expand" size={11} color={palette.navy} />
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         {/* Received by */}
         <Text style={styles.section}>RECEIVED BY</Text>
@@ -186,7 +317,7 @@ export const PodViewerScreen: React.FC = () => {
                 end={{ x: 1, y: 1 }}
                 style={styles.receiverAvatar}
               >
-                <Text style={styles.receiverInitials}>AS</Text>
+                <Text style={styles.receiverInitials}>{receiverInitials}</Text>
               </LinearGradient>
               <View style={styles.receiverBadge}>
                 <Icon name="check" size={9} color={palette.navy} strokeWidth={3} />
@@ -194,14 +325,25 @@ export const PodViewerScreen: React.FC = () => {
             </View>
 
             <View style={styles.receiverBody}>
-              <Text style={styles.receiverName}>Anita Sharma</Text>
-              <Text style={styles.receiverRole}>
-                Store Manager · Sanathnagar
+              <Text style={styles.receiverName}>
+                {receiverName || 'Not recorded'}
               </Text>
-              <View style={styles.verifiedRow}>
-                <Icon name="badge-check" size={11} color={palette.gold} />
-                <Text style={styles.verifiedText}>Verified receiver</Text>
-              </View>
+              <Text style={styles.receiverRole}>
+                {receiverPhone || (record?.remarks ?? 'No number taken')}
+              </Text>
+              {/*
+                "Verified receiver" was a badge nothing verified. What the
+                driver actually did is take a name at the door, so that is what
+                it says now — and only when a name was in fact taken.
+              */}
+              {receiverName ? (
+                <View style={styles.verifiedRow}>
+                  <Icon name="badge-check" size={11} color={palette.gold} />
+                  <Text style={styles.verifiedText}>
+                    Signed for at delivery
+                  </Text>
+                </View>
+              ) : null}
             </View>
           </View>
         </Card>
@@ -210,7 +352,7 @@ export const PodViewerScreen: React.FC = () => {
         <Text style={[styles.section, styles.sectionGap]}>TRIP INFO</Text>
         <Card padding={11} marginBottom={0}>
           <View style={styles.infoGrid}>
-            {TRIP_INFO.map(item => (
+            {tripInfo.map(item => (
               <View key={item.label} style={styles.infoCell}>
                 <Text style={styles.infoLabel}>{item.label}</Text>
                 <Text style={styles.infoValue}>{item.value}</Text>
@@ -218,6 +360,8 @@ export const PodViewerScreen: React.FC = () => {
             ))}
           </View>
         </Card>
+        </>
+        ) : null}
       </Content>
     </Screen>
   );
@@ -288,7 +432,13 @@ const styles = StyleSheet.create({
   },
   sectionGap: { marginTop: s(14) },
 
-  photoGrid: { flexDirection: 'row', gap: s(8), marginBottom: s(10) },
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: s(8),
+    marginBottom: s(10),
+  },
+  noPhotos: font(11, '600', { color: palette.slate500 }),
   photoWrap: { flex: 1 },
   photo: {
     height: s(88),
@@ -297,26 +447,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
-  photoTagDark: {
-    position: 'absolute',
-    bottom: s(5),
-    left: s(5),
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingVertical: s(1),
-    paddingHorizontal: s(5),
-    borderRadius: s(4),
-  },
-  photoTagDarkText: font(7, '800', { color: palette.white }),
-  photoTagLight: {
-    position: 'absolute',
-    bottom: s(5),
-    left: s(5),
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    paddingVertical: s(1),
-    paddingHorizontal: s(5),
-    borderRadius: s(4),
-  },
-  photoTagLightText: font(7, '800', { color: palette.navy }),
   expand: {
     position: 'absolute',
     top: s(5),

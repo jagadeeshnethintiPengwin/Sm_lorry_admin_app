@@ -215,9 +215,66 @@ export const BookingReviewScreen: React.FC = () => {
     [roster.data],
   );
 
+  /*
+   * What is actually selected above, for the confirmation card below it.
+   *
+   * That card showed `AP 39 TR 4522 · 17 Ft · 9 Ton · Available now` with a
+   * gold tick, and `Manoj K · Online · 42 trips · AP 05 CH 9912` beneath the
+   * driver picker — fixed text with a checkmark on it, sitting directly under
+   * a real dropdown. A dispatcher reading top to bottom would take it as the
+   * assignment being confirmed, approve, and send a different lorry than the
+   * one on screen. It now echoes the selection, and shows nothing until one
+   * has been made.
+   */
+  const chosenVehicle = useMemo(
+    () => (fleet.data ?? []).find(row => String(row.id) === vehicle) ?? null,
+    [fleet.data, vehicle],
+  );
+  const chosenDriver = useMemo(
+    () => (roster.data ?? []).find(row => String(row.id) === driver) ?? null,
+    [roster.data, driver],
+  );
+
+  const chosenDriverName =
+    (chosenDriver?.user as { name?: string } | undefined)?.name ?? 'Driver';
+  const chosenDriverInitials =
+    chosenDriverName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || '—';
+
+  /**
+   * Rings the customer on this booking.
+   *
+   * It dialled `+91 98765 43210` — a seed number, the same one on four other
+   * screens — so pressing Call on any booking rang one fixed person who was
+   * usually not the customer. On a screen whose job is to approve or reject a
+   * shipment, that is a call to the wrong company about somebody else's load.
+   *
+   * Does nothing when there is no number rather than dialling a placeholder:
+   * an operator who hears the wrong person answer has already done the damage.
+   */
+  /* Read from the booking this screen is reviewing. */
+  const customer = (booking.data as Record<string, any> | null)?.customer;
+  const customerName: string =
+    customer?.company || customer?.user?.name || 'Customer';
+  const contactName: string = customer?.company ? customer?.user?.name : '';
+  const customerMobile: string = customer?.user?.mobile ?? '';
+  const customerInitials = customerName
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word: string) => word[0] ?? '')
+    .join('')
+    .toUpperCase();
+
   const call = useCallback(() => {
-    Linking.openURL('tel:+919876543210').catch(() => undefined);
-  }, []);
+    if (!customerMobile) {
+      return;
+    }
+    Linking.openURL(`tel:${customerMobile}`).catch(() => undefined);
+  }, [customerMobile]);
 
   /**
    * Reports the outcome, then returns to the list *on the bucket it moved to*.
@@ -418,22 +475,46 @@ export const BookingReviewScreen: React.FC = () => {
         {/* Customer */}
         <Text style={styles.section}>CUSTOMER</Text>
         <Card padding={11} style={styles.customerCard}>
+          {/*
+            The customer on this booking, not a fixed one.
+            
+            This card read `SS · Sri Sai Traders · Rajesh Kumar · 28 trips ·
+            98% on-time` on every booking in the system — a company, a contact
+            and two statistics, none of them belonging to the shipment being
+            reviewed. The booking has carried all of it since the screen was
+            written; it simply was not read.
+          */}
           <View style={styles.customerTile}>
-            <Text style={styles.customerInitials}>SS</Text>
+            <Text style={styles.customerInitials}>{customerInitials}</Text>
           </View>
           <View style={styles.customerBody}>
-            <Text style={styles.customerName}>Sri Sai Traders</Text>
-            <Text style={styles.customerMeta}>
-              Rajesh Kumar · 28 trips · 98% on-time
+            <Text style={styles.customerName} numberOfLines={1}>
+              {customerName}
+            </Text>
+            <Text style={styles.customerMeta} numberOfLines={1}>
+              {[contactName, customerMobile].filter(Boolean).join(' · ') ||
+                'No contact on file'}
             </Text>
           </View>
           <Pressable
             onPress={call}
+            disabled={!customerMobile}
             accessibilityRole="button"
-            accessibilityLabel="Call Sri Sai Traders"
-            style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
+            accessibilityState={{ disabled: !customerMobile }}
+            accessibilityLabel={
+              customerMobile ? `Call ${customerName}` : 'No number on file'
+            }
+            style={({ pressed }) => [
+              styles.callBtn,
+              !customerMobile && styles.callBtnOff,
+              pressed && styles.pressed,
+            ]}
           >
-            <Icon name="phone" size={14} color={palette.navy} />
+            <Icon
+              name="phone"
+              size={14}
+              color={customerMobile ? palette.navy : palette.slate400}
+            />
           </Pressable>
         </Card>
 
@@ -564,23 +645,35 @@ export const BookingReviewScreen: React.FC = () => {
             marginBottom={10}
           />
 
-          <View style={styles.matchGold}>
-            <IconWell
-              icon="truck"
-              size={38}
-              iconSize={20}
-              backgroundColor={palette.white}
-              color={palette.gold}
-              borderRadius={radius.lg}
-            />
-            <View style={styles.matchBody}>
-              <Text style={styles.matchTitle}>AP 39 TR 4522</Text>
-              <Text style={styles.matchMetaGold}>
-                17 Ft · 9 Ton · Available now
-              </Text>
+          {chosenVehicle ? (
+            <View style={styles.matchGold}>
+              <IconWell
+                icon="truck"
+                size={38}
+                iconSize={20}
+                backgroundColor={palette.white}
+                color={palette.gold}
+                borderRadius={radius.lg}
+              />
+              <View style={styles.matchBody}>
+                <Text style={styles.matchTitle}>
+                  {String(chosenVehicle.registration ?? '—')}
+                </Text>
+                <Text style={styles.matchMetaGold}>
+                  {[
+                    chosenVehicle.type,
+                    chosenVehicle.capacity,
+                    chosenVehicle.status === 'IN_TRIP'
+                      ? 'In trip'
+                      : 'Available now',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
+              </View>
+              <Icon name="check" size={16} color={palette.gold} />
             </View>
-            <Icon name="check" size={16} color={palette.gold} />
-          </View>
+          ) : null}
         </Card>
 
         {/* Assign driver */}
@@ -601,26 +694,39 @@ export const BookingReviewScreen: React.FC = () => {
             marginBottom={10}
           />
 
-          <View style={styles.matchNavy}>
-            <View>
-              <View style={styles.driverAvatar}>
-                <Text style={styles.driverInitials}>MK</Text>
+          {chosenDriver ? (
+            <View style={styles.matchNavy}>
+              <View>
+                <View style={styles.driverAvatar}>
+                  <Text style={styles.driverInitials}>
+                    {chosenDriverInitials}
+                  </Text>
+                </View>
+                <View style={styles.presence} />
               </View>
-              <View style={styles.presence} />
-            </View>
 
-            <View style={styles.matchBody}>
-              <Text style={styles.matchTitle}>Manoj K</Text>
-              <View style={styles.driverMetaRow}>
-                <View style={styles.onlineDot} />
-                <Text style={styles.matchMeta}>
-                  Online · 42 trips · AP 05 CH 9912
-                </Text>
+              <View style={styles.matchBody}>
+                <Text style={styles.matchTitle}>{chosenDriverName}</Text>
+                <View style={styles.driverMetaRow}>
+                  <View style={styles.onlineDot} />
+                  <Text style={styles.matchMeta}>
+                    {[
+                      String(chosenDriver.status ?? '').replace(/_/g, ' '),
+                      Number(chosenDriver.totalTrips ?? 0) > 0
+                        ? `${chosenDriver.totalTrips} trips`
+                        : null,
+                      (chosenDriver.vehicle as { registration?: string } | null)
+                        ?.registration,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </Text>
+                </View>
               </View>
-            </View>
 
-            <Icon name="check" size={16} color={palette.gold} />
-          </View>
+              <Icon name="check" size={16} color={palette.gold} />
+            </View>
+          ) : null}
         </Card>
       </Content>
 
@@ -731,6 +837,7 @@ const styles = StyleSheet.create({
   customerBody: { flex: 1 },
   customerName: font(11, '800', { color: palette.navy }),
   customerMeta: font(9, '400', { color: palette.slate500 }),
+  callBtnOff: { opacity: 0.45 },
   callBtn: {
     width: s(32),
     height: s(32),

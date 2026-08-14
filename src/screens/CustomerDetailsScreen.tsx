@@ -1,7 +1,8 @@
 import React, { useCallback } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
@@ -11,6 +12,7 @@ import {
   Content,
   Icon,
   IconWell,
+  ListState,
   RadialGlow,
   Screen,
 } from '@components/index';
@@ -20,6 +22,8 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { bookingService, customerService } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 14 — Customer Profile.
@@ -29,35 +33,72 @@ import type { RootStackParamList } from '@navigation/types';
  *   divider and MOBILE / EMAIL pair · BUSINESS card with GSTIN row ·
  *   RECENT TRIPS · Edit / New Booking footer
  */
-type TripRow = {
-  reference: string;
-  route: string;
-  status: string;
-  pill: 'navy' | 'gold';
-};
-
-const RECENT: TripRow[] = [
-  {
-    reference: '#TR-2026-8836',
-    route: 'Vizag → Hyderabad',
-    status: 'IN TRANSIT',
-    pill: 'navy',
-  },
-  {
-    reference: '#TR-2026-8812',
-    route: 'Uppal → Chennai',
-    status: 'DELIVERED',
-    pill: 'gold',
-  },
-];
 
 export const CustomerDetailsScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route =
+    useRoute<RouteProp<RootStackParamList, 'CustomerDetails'>>();
+  const { customerId } = route.params;
 
+  /*
+   * The customer this screen was opened for.
+   *
+   * It never read `customerId` at all — the route has carried one since the
+   * screen was written and nothing looked at it — so every customer in the
+   * roster opened as `Rajesh Kumar`, GST VERIFIED, with a fixed number on the
+   * call button. An operator checking who they were about to ring was reading
+   * somebody else's record.
+   */
+  const { data, loading, error, refetch } = useApi(
+    () => customerService.get(customerId),
+    [customerId],
+  );
+
+  const customer = (data ?? null) as Record<string, any> | null;
+
+  /*
+   * This customer's shipments.
+   *
+   * The list under RECENT TRIPS was two literals — `#TR-2026-8836 Vizag →
+   * Hyderabad` and `#TR-2026-8812 Uppal → Chennai` — shown against every
+   * customer in the roster, and tapping one navigated with the *reference*
+   * where a trip id was expected, so the trip screen it opened could only
+   * ever 404.
+   */
+  const recent = useApi(
+    () => bookingService.list({ customerId, limit: 5 }),
+    [customerId],
+  );
+  const shipments = recent.data ?? [];
+  const company: string = customer?.company || customer?.user?.name || '—';
+  const contactName: string =
+    customer?.contactName || customer?.user?.name || '';
+  const mobile: string = customer?.user?.mobile ?? '';
+  const email: string = customer?.email || customer?.user?.email || '';
+  const gstin: string = customer?.gstin ?? '';
+  const verified: boolean = Boolean(customer?.verified);
+  const tripCount: number = Number(customer?._count?.bookings ?? 0);
+
+  const initials = company
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word: string) => word[0] ?? '')
+    .join('')
+    .toUpperCase();
+
+  /**
+   * Rings this customer.
+   *
+   * Dialled a fixed seed number before, so the office rang one person whoever
+   * they had opened.
+   */
   const call = useCallback(() => {
-    Linking.openURL('tel:+919876543210').catch(() => undefined);
-  }, []);
+    if (!mobile) {
+      return;
+    }
+    Linking.openURL(`tel:${mobile}`).catch(() => undefined);
+  }, [mobile]);
 
   const openTrips = useCallback(() => navigation.navigate('Trips'), [navigation]);
 
@@ -82,6 +123,16 @@ export const CustomerDetailsScreen: React.FC = () => {
       />
 
       <Content padding={0}>
+        <ListState
+          loading={loading}
+          error={error}
+          empty={!loading && !error && !customer}
+          what="customer"
+          emptyIcon="users"
+          emptyHint="This customer could not be found."
+          onRetry={refetch}
+        />
+
         {/* Customer hero */}
         <LinearGradient
           colors={[palette.navy, palette.navyMid, palette.navyDark]}
@@ -107,16 +158,28 @@ export const CustomerDetailsScreen: React.FC = () => {
                 style={styles.logoRing}
               />
               <View style={styles.logo}>
-                <Text style={styles.logoText}>SS</Text>
+                <Text style={styles.logoText}>{initials}</Text>
               </View>
             </View>
 
             <View style={styles.heroBody}>
-              <Text style={styles.heroName}>Sri Sai Traders</Text>
-              <Text style={styles.heroPlace}>Hyderabad, Telangana</Text>
+              <Text style={styles.heroName} numberOfLines={1}>
+                {company}
+              </Text>
+              <Text style={styles.heroPlace} numberOfLines={1}>
+                {[customer?.city, customer?.state].filter(Boolean).join(', ') ||
+                  '—'}
+              </Text>
               <View style={styles.verifiedChip}>
                 <Icon name="badge-check" size={10} color={palette.navy} />
-                <Text style={styles.verifiedText}>GST VERIFIED · ACTIVE</Text>
+                {/*
+                  Claimed on every customer before, verified or not — and a
+                  GST status is exactly what an operator would rely on when
+                  deciding whether to raise a tax invoice.
+                */}
+                <Text style={styles.verifiedText}>
+                  {verified ? 'GST VERIFIED' : 'NOT VERIFIED'}
+                </Text>
               </View>
             </View>
           </View>
@@ -126,16 +189,31 @@ export const CustomerDetailsScreen: React.FC = () => {
         <View style={styles.statsWrap}>
           <View style={styles.statsCard}>
             <View style={[styles.stat, styles.statDivider]}>
-              <Text style={styles.statValue}>28</Text>
-              <Text style={styles.statLabel}>TRIPS</Text>
+              {/*
+                Counted from the record, not asserted.
+                
+                The three figures here read `28 trips · 98% on-time · 2y` on
+                every customer. Two of them have nothing behind them at all —
+                the API records no punctuality figure — so they are gone rather
+                than invented; a shipper told they are a two-year client with
+                98% on-time service has been told something nobody measured.
+              */}
+              <Text style={styles.statValue}>{tripCount}</Text>
+              <Text style={styles.statLabel}>BOOKINGS</Text>
             </View>
             <View style={[styles.stat, styles.statDivider]}>
-              <Text style={styles.statValueGold}>98%</Text>
-              <Text style={styles.statLabel}>ON TIME</Text>
+              <Text style={styles.statValueGold}>
+                {verified ? 'YES' : 'NO'}
+              </Text>
+              <Text style={styles.statLabel}>GST</Text>
             </View>
             <View style={styles.stat}>
-              <Text style={styles.statValue}>2y</Text>
-              <Text style={styles.statLabel}>CLIENT</Text>
+              <Text style={styles.statValue}>
+                {customer?.since
+                  ? new Date(customer.since as string).getFullYear()
+                  : '—'}
+              </Text>
+              <Text style={styles.statLabel}>SINCE</Text>
             </View>
           </View>
         </View>
@@ -151,18 +229,34 @@ export const CustomerDetailsScreen: React.FC = () => {
                 end={{ x: 1, y: 1 }}
                 style={styles.contactAvatar}
               >
-                <Text style={styles.contactInitials}>RK</Text>
+                <Text style={styles.contactInitials}>
+                  {(contactName || company)
+                    .split(/\s+/)
+                    .slice(0, 2)
+                    .map((word: string) => word[0] ?? '')
+                    .join('')
+                    .toUpperCase()}
+                </Text>
               </LinearGradient>
 
               <View style={styles.contactBody}>
-                <Text style={styles.contactName}>Rajesh Kumar</Text>
-                <Text style={styles.contactRole}>Director</Text>
+                <Text style={styles.contactName} numberOfLines={1}>
+                  {contactName || '—'}
+                </Text>
+                {/* No invented job title — the API does not record one. */}
+                <Text style={styles.contactRole}>
+                  {customer?.businessType === 'company'
+                    ? 'Business account'
+                    : 'Individual'}
+                </Text>
               </View>
 
               <Pressable
                 onPress={call}
                 accessibilityRole="button"
-                accessibilityLabel="Call Rajesh Kumar"
+                accessibilityLabel={
+                  mobile ? `Call ${contactName || company}` : 'No number on file'
+                }
                 style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
               >
                 <Icon name="phone" size={14} color={palette.navy} />
@@ -172,11 +266,13 @@ export const CustomerDetailsScreen: React.FC = () => {
             <View style={styles.dashedRow}>
               <View style={styles.pairCell}>
                 <Text style={styles.pairLabel}>MOBILE</Text>
-                <Text style={styles.pairValue}>+91 98765 43210</Text>
+                <Text style={styles.pairValue}>{mobile || '—'}</Text>
               </View>
               <View style={styles.pairCell}>
                 <Text style={styles.pairLabel}>EMAIL</Text>
-                <Text style={styles.pairValue}>rajesh@sri.in</Text>
+                <Text style={styles.pairValue} numberOfLines={1}>
+                  {email || '—'}
+                </Text>
               </View>
             </View>
           </Card>
@@ -196,7 +292,9 @@ export const CustomerDetailsScreen: React.FC = () => {
                 borderRadius={radius.md}
               />
               <View style={styles.bizBody}>
-                <Text style={styles.bizName}>Sri Sai Traders Pvt Ltd</Text>
+                <Text style={styles.bizName} numberOfLines={1}>
+                  {company}
+                </Text>
                 <Text style={styles.bizAddress}>
                   Plot 42, Industrial Estate, Gachibowli, Hyderabad - 500032
                 </Text>
@@ -205,7 +303,8 @@ export const CustomerDetailsScreen: React.FC = () => {
 
             <View style={styles.gstRow}>
               <Text style={styles.gstLabel}>GSTIN</Text>
-              <Text style={styles.gstValue}>36AABCS1234H1Z5</Text>
+              {/* A GSTIN nobody supplied is not a GSTIN. */}
+              <Text style={styles.gstValue}>{gstin || 'Not provided'}</Text>
               <View style={styles.pillGold}>
                 <Text style={styles.pillGoldText}>VERIFIED</Text>
               </View>
@@ -216,7 +315,9 @@ export const CustomerDetailsScreen: React.FC = () => {
         {/* Recent trips */}
         <View style={styles.block}>
           <View style={styles.sectionRow}>
-            <Text style={styles.sectionFlat}>RECENT TRIPS · 28</Text>
+            <Text style={styles.sectionFlat}>
+              RECENT TRIPS{shipments.length ? ` · ${shipments.length}` : ''}
+            </Text>
             <Pressable
               onPress={openTrips}
               accessibilityRole="button"
@@ -226,38 +327,60 @@ export const CustomerDetailsScreen: React.FC = () => {
             </Pressable>
           </View>
 
-          {RECENT.map(trip => (
+          {recent.loading ? (
+            <Card padding={12}>
+              <Text style={styles.emptyTrips}>Loading shipments…</Text>
+            </Card>
+          ) : !shipments.length ? (
+            <Card padding={12}>
+              <Text style={styles.emptyTrips}>
+                This customer has not booked a shipment yet.
+              </Text>
+            </Card>
+          ) : (
+            shipments.map(booking => (
             <Card
-              key={trip.reference}
+              key={String(booking.id)}
               padding={10}
               onPress={() =>
-                navigation.navigate('TripDetails', {
-                  tripId: trip.reference.replace('#', ''),
+                navigation.navigate('BookingReview', {
+                  bookingId: String(booking.id),
                 })
               }
-              accessibilityLabel={`${trip.reference}, ${trip.route}, ${trip.status}`}
+              accessibilityLabel={`${booking.reference}, ${booking.pickupPlace} to ${booking.dropPlace}, ${booking.status}`}
             >
               <View style={styles.tripRow}>
-                <View>
-                  <Text style={styles.tripRef}>{trip.reference}</Text>
-                  <Text style={styles.tripRoute}>{trip.route}</Text>
+                <View style={styles.tripBody}>
+                  <Text style={styles.tripRef}>{booking.reference}</Text>
+                  <Text style={styles.tripRoute} numberOfLines={1}>
+                    {booking.pickupPlace} → {booking.dropPlace}
+                  </Text>
                 </View>
+                {/*
+                  Gold for a shipment that is finished, navy for one still
+                  running. The mock hardcoded one of each.
+                */}
                 <View
-                  style={trip.pill === 'navy' ? styles.pillNavy : styles.pillGold}
+                  style={
+                    booking.status === 'COMPLETED'
+                      ? styles.pillGold
+                      : styles.pillNavy
+                  }
                 >
                   <Text
                     style={
-                      trip.pill === 'navy'
-                        ? styles.pillNavyText
-                        : styles.pillGoldText
+                      booking.status === 'COMPLETED'
+                        ? styles.pillGoldText
+                        : styles.pillNavyText
                     }
                   >
-                    {trip.status}
+                    {String(booking.status ?? '').replace(/_/g, ' ')}
                   </Text>
                 </View>
               </View>
             </Card>
-          ))}
+            ))
+          )}
         </View>
 
         <View style={styles.actions}>
@@ -432,6 +555,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tripRef: font(10, '800', { color: palette.red }),
+  /*
+   * `flexShrink: 1`, because it defaults to 0 in React Native.
+   *
+   * Real place names are longer than "Vizag" — the mock's route fitted, a
+   * genuine `Gachibowli, Hyderabad → Warangal, Telangana` pushes the status
+   * pill off the card unless this side is allowed to give way.
+   */
+  tripBody: { flexShrink: 1, paddingRight: s(8) },
+  emptyTrips: font(11, '600', { color: palette.slate500 }),
   tripRoute: {
     ...font(9, '700', { color: palette.navy }),
     marginTop: s(1),

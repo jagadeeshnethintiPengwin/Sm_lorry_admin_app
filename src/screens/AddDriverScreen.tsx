@@ -223,6 +223,31 @@ export const AddDriverScreen: React.FC = () => {
       return;
     }
 
+    /*
+     * A driver is not added without their licence and their identity on file.
+     *
+     * These were optional, so a driver could join the roster with a name, a
+     * number and nothing to prove either — and the gap only surfaced later,
+     * when the office needed to show a checked licence for someone already
+     * carrying loads. Verifying afterwards means chasing a person who is on
+     * the road; refusing here costs one photograph now.
+     *
+     * Reported as its own message rather than through `errors`, which is keyed
+     * by the text fields — the tiles are what has to change colour, and they
+     * are further down the screen than the inputs.
+     */
+    const missing = [
+      !docs.dl ? 'the licence photo' : null,
+      !docs.kyc ? 'the Aadhaar photo' : null,
+    ].filter(Boolean);
+
+    if (missing.length) {
+      setSubmitError(
+        `Attach ${missing.join(' and ')} before adding the driver. Both are required.`,
+      );
+      return;
+    }
+
     setSaving(true);
     try {
       const created = await driverService.create({
@@ -552,7 +577,17 @@ export const AddDriverScreen: React.FC = () => {
         </Card>
 
         {/* UPLOAD DOCUMENTS */}
-        <Text style={[styles.section, styles.sectionGap]}>UPLOAD DOCUMENTS</Text>
+        {/*
+          Marked required, like the sections above it.
+          
+          The tiles were indistinguishable from optional extras, so an operator
+          filled in the form, pressed Add Driver and was refused by something
+          they had no reason to think was needed. The asterisk is the same one
+          Personal Info and Driving License already carry.
+        */}
+        <Text style={[styles.section, styles.sectionGap]}>
+          UPLOAD DOCUMENTS <Text style={styles.star}>*</Text>
+        </Text>
         <View style={styles.slotGrid}>
           {[
             { key: 'dl', label: 'DL Photo' },
@@ -575,6 +610,8 @@ export const AddDriverScreen: React.FC = () => {
                 style={({ pressed }) => [
                   styles.slot,
                   attached && styles.slotDone,
+                  /* Outlined red once a submit has been refused for it. */
+                  !attached && submitError ? styles.slotMissing : null,
                   pressed && styles.pressed,
                 ]}
               >
@@ -789,6 +826,12 @@ const styles = StyleSheet.create({
   slotLabel: font(10, '800', { color: palette.goldText }),
   /* Solid once something is on file, so a filled tile reads as finished
      rather than as one still waiting to be tapped. */
+  /* The tile the submit is waiting on. */
+  slotMissing: {
+    borderStyle: 'solid',
+    borderColor: palette.red,
+    backgroundColor: palette.redTint,
+  },
   slotDone: {
     borderStyle: 'solid',
     borderColor: palette.gold,

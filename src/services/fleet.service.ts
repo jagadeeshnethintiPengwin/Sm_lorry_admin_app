@@ -263,8 +263,40 @@ export const tripService = {
   list: (params?: Record<string, unknown>) => listOf<AdminTrip>('/trips', params),
   live: () => listOf<LiveTrip>('/trips/live'),
   get: (id: string) => oneOf<AdminTrip>(`/trips/${id}`),
-  tracking: (id: string) => listOf<Record<string, unknown>>(`/trips/${id}/tracking`),
+  /*
+   * The live position, distance and timeline for one trip.
+   *
+   * `listOf`, which this used, hands back `[]` for any object that has no
+   * `items` — and this endpoint answers a single record shaped
+   * `{ reference, status, distanceKm, coveredKm, progress, location, events }`.
+   * So the call resolved to an empty array every time, with no error to
+   * notice: a screen asking where the lorry is was told nothing, silently.
+   */
+  tracking: (id: string) => oneOf<TripTracking>(`/trips/${id}/tracking`),
 };
+
+/** What `/trips/:id/tracking` answers — the live board for one trip. */
+export interface TripTracking {
+  reference: string;
+  status: string;
+  distanceKm: number;
+  coveredKm: number;
+  /** Whole percent, already rounded by the API. */
+  progress: number;
+  /** `null` until the lorry reports — an unstarted trip has no position. */
+  location: {
+    lat: number;
+    lng: number;
+    recordedAt: string;
+    speedKph?: number | null;
+  } | null;
+  events: Array<{
+    id: string;
+    stage: string;
+    label: string;
+    createdAt: string;
+  }>;
+}
 
 /**
  * What `/trips/live` answers — a projection, not a whole trip.
@@ -288,6 +320,19 @@ export type LiveTrip = {
   /** Null until the driver's app has reported at least once. */
   location?: { lat: number; lng: number } | null;
   lastPingAt?: string | null;
+  /**
+   * What the tracker on the lorry reports, and the phone cannot.
+   *
+   * `source` says which of the two the position came from; the rest are only
+   * present when it came from the vehicle's own unit. A heading is what lets
+   * the map point the truck the way it is actually facing rather than drawing
+   * every lorry identically.
+   */
+  source?: 'tracker' | 'app' | 'last-known';
+  speedKmph?: number | null;
+  heading?: number | null;
+  ignition?: boolean | null;
+  gpsAccurate?: boolean | null;
 };
 
 export const documentService = {
@@ -308,6 +353,38 @@ export const documentService = {
       `/documents/${id}/download`,
     );
     return data.url;
+  },
+
+  /**
+   * The proof-of-delivery photographs the driver took, ready to display.
+   *
+   * Two calls per photo is deliberate: the list carries `fileUrl`, but that is
+   * the guarded `/uploads/:name` path and `<Image>` sends no Authorization
+   * header — pointing a thumbnail at it returns 401 and renders as a grey box.
+   * Each one is exchanged for a signed link that authorises just that file.
+   */
+  podPhotos: async (
+    tripId: string,
+  ): Promise<Array<{ id: string; name: string; url: string }>> => {
+    const rows = await listOf<AdminDocument>('/documents', {
+      tripId,
+      kind: 'POD',
+    });
+    const signed = await Promise.all(
+      rows.map(async row => {
+        try {
+          return {
+            id: row.id,
+            name: String(row.name ?? 'Photo'),
+            url: await documentService.downloadUrl(row.id),
+          };
+        } catch {
+          // One unreadable file must not blank the whole proof.
+          return null;
+        }
+      }),
+    );
+    return signed.filter((row): row is { id: string; name: string; url: string } => row !== null);
   },
 };
 

@@ -14,6 +14,7 @@ import {
   Footer,
   Icon,
   IconWell,
+  ListState,
   RadialGlow,
   Screen,
 } from '@components/index';
@@ -23,6 +24,8 @@ import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
 import type { RootStackParamList } from '@navigation/types';
+import { tripService } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 19 — Trip Details.
@@ -93,9 +96,76 @@ export const TripDetailsScreen: React.FC = () => {
   const route = useRoute<RouteProp<RootStackParamList, 'TripDetails'>>();
   const { tripId } = route.params;
 
+  /*
+   * The trip this screen was opened for.
+   *
+   * It loaded nothing at all. Every value below — the reference, the status,
+   * both cities, the progress rail, the driver, the lorry and the customer —
+   * was written into the markup, so opening any trip in the fleet showed
+   * `#TR-2026-8836 · Ramesh Kumar · AP 31 XX 1234 · Sri Sai Traders`. An
+   * operator checking on a consignment was reading somebody else's, every
+   * time, and the screen gave no sign of it.
+   *
+   * One request carries all of it: the trip, its booking, the vehicle, the
+   * driver and the customer.
+   */
+  const { data, loading, error, refetch } = useApi(
+    () => tripService.get(tripId),
+    [tripId],
+  );
+
+  const trip = (data ?? null) as Record<string, any> | null;
+  const booking = trip?.booking;
+  const driverName: string = trip?.driver?.user?.name ?? '—';
+  const driverMobile: string = trip?.driver?.user?.mobile ?? '';
+  const registration: string = trip?.vehicle?.registration ?? '—';
+  const vehicleType: string = trip?.vehicle?.type ?? '';
+  const customer = booking?.customer;
+  const customerName: string =
+    customer?.company || customer?.user?.name || 'Customer';
+  const customerContact: string = customer?.user?.name ?? '';
+  const customerMobile: string = customer?.user?.mobile ?? '';
+
+  /* What the booking and the trip actually carry between them. */
+  const docCount =
+    ((booking?.documents as unknown[] | undefined)?.length ?? 0) +
+    ((trip?.documents as unknown[] | undefined)?.length ?? 0);
+
+  const distanceKm = Number(trip?.distanceKm ?? 0);
+  const coveredKm = Number(trip?.coveredKm ?? 0);
+  const progress =
+    distanceKm > 0 ? Math.min(100, Math.round((coveredKm / distanceKm) * 100)) : 0;
+
+  /** `RK` from `Ramesh Kumar`, for the avatar. */
+  const initialsOf = (name: string) =>
+    name
+      .split(/\s+/)
+      .slice(0, 2)
+      .map(word => word[0] ?? '')
+      .join('')
+      .toUpperCase();
+
+  /**
+   * Rings the driver on this trip.
+   *
+   * It dialled a fixed seed number, so "Call driver" reached one person
+   * regardless of who was actually carrying the load — on a screen whose whole
+   * purpose is to check on a consignment in progress.
+   */
   const callDriver = useCallback(() => {
-    Linking.openURL('tel:+919876543210').catch(() => undefined);
-  }, []);
+    if (!driverMobile) {
+      return;
+    }
+    Linking.openURL(`tel:${driverMobile}`).catch(() => undefined);
+  }, [driverMobile]);
+
+  /** Rings the shipper on this trip. */
+  const callCustomer = useCallback(() => {
+    if (!customerMobile) {
+      return;
+    }
+    Linking.openURL(`tel:${customerMobile}`).catch(() => undefined);
+  }, [customerMobile]);
 
   const openTimeline = useCallback(
     () => navigation.navigate('TripTimeline', { tripId }),
@@ -115,13 +185,38 @@ export const TripDetailsScreen: React.FC = () => {
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
-        title="Trip #8836"
-        subtitle="In transit"
+        title={trip?.reference ? `Trip ${trip.reference}` : 'Trip'}
+        subtitle={
+          trip?.status
+            ? trip.status.replace('_', ' ').toLowerCase()
+            : loading
+              ? 'Loading…'
+              : ''
+        }
         showBack
         onBackPress={navigation.goBack}
       />
 
       <Content>
+        {/*
+          A screen that fetches has to say when it cannot.
+          
+          Loading, failure and not-found were all impossible states before,
+          because nothing was ever requested — the invented trip rendered
+          instantly and always.
+        */}
+        <ListState
+          loading={loading}
+          error={error}
+          empty={!loading && !error && !trip}
+          what="trip"
+          emptyIcon="truck"
+          emptyHint="This trip could not be found."
+          onRetry={refetch}
+        />
+
+        {trip ? (
+        <>
         {/* Hero */}
         <LinearGradient
           colors={gradients.navyHero as unknown as string[]}
@@ -139,30 +234,45 @@ export const TripDetailsScreen: React.FC = () => {
 
           <View style={styles.heroBody}>
             <View style={styles.heroHead}>
-              <Text style={styles.heroRef}>#TR-2026-8836</Text>
+              <Text style={styles.heroRef}>#{trip?.reference ?? '—'}</Text>
               <View style={styles.heroChip}>
                 <BlinkDot color={palette.gold} size={5} />
-                <Text style={styles.heroChipText}>IN TRANSIT</Text>
+                <Text style={styles.heroChipText}>
+                  {(trip?.status ?? '').replace('_', ' ') || '—'}
+                </Text>
               </View>
             </View>
 
             <View style={styles.heroRoute}>
-              <Text style={styles.heroCity}>Visakhapatnam</Text>
+              <Text style={styles.heroCity} numberOfLines={1}>
+                {booking?.pickupPlace ?? '—'}
+              </Text>
               <Icon name="arrow-right" size={14} color={palette.gold} />
-              <Text style={styles.heroCity}>Hyderabad</Text>
+              <Text style={styles.heroCity} numberOfLines={1}>
+                {booking?.dropPlace ?? '—'}
+              </Text>
             </View>
 
             <View style={styles.progressBlock}>
               <View style={styles.progressHead}>
-                <Text style={styles.progressText}>128 / 620 KM</Text>
-                <Text style={styles.progressText}>21% · ETA 2:45 PM</Text>
+                <Text style={styles.progressText}>
+                  {Math.round(coveredKm)} / {Math.round(distanceKm)} KM
+                </Text>
+                {/*
+                  No ETA. It read `21% · ETA 2:45 PM` on every trip, and there
+                  is nothing behind it — the API reports distance covered, not
+                  a predicted arrival, so an invented time is the one number an
+                  operator would relay to a waiting customer.
+                */}
+                <Text style={styles.progressText}>{progress}%</Text>
               </View>
               <View style={styles.track}>
                 <LinearGradient
                   colors={[palette.gold, palette.red]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
-                  style={styles.fill}
+                  /* The rail was a fixed width, so every trip looked 21% run. */
+                  style={[styles.fill, { width: `${progress}%` }]}
                 />
               </View>
             </View>
@@ -180,20 +290,28 @@ export const TripDetailsScreen: React.FC = () => {
                 end={{ x: 1, y: 1 }}
                 style={styles.driverAvatar}
               >
-                <Text style={styles.driverInitials}>RK</Text>
+                <Text style={styles.driverInitials}>
+                  {initialsOf(driverName)}
+                </Text>
               </LinearGradient>
               <View style={styles.presence} />
             </View>
 
             <View style={styles.driverBody}>
-              <Text style={styles.driverName}>Ramesh Kumar</Text>
-              <Text style={styles.driverPhone}>+91 98765 43210</Text>
+              <Text style={styles.driverName} numberOfLines={1}>
+                {driverName}
+              </Text>
+              <Text style={styles.driverPhone}>
+                {driverMobile || 'No number on file'}
+              </Text>
             </View>
 
             <Pressable
               onPress={callDriver}
               accessibilityRole="button"
-              accessibilityLabel="Call Ramesh Kumar"
+              accessibilityLabel={
+                driverMobile ? `Call ${driverName}` : 'No number on file'
+              }
               style={({ pressed }) => [styles.callGold, pressed && styles.pressed]}
             >
               <Icon name="phone" size={14} color={palette.navy} />
@@ -210,10 +328,22 @@ export const TripDetailsScreen: React.FC = () => {
               borderRadius={radius.lg}
             />
             <View style={styles.driverBody}>
-              <Text style={styles.driverName}>AP 31 XX 1234</Text>
-              <Text style={styles.driverPhone}>14 Ft Truck · 62 km/h</Text>
+              <Text style={styles.driverName} numberOfLines={1}>
+                {registration}
+              </Text>
+              {/*
+                No speed. `62 km/h` was fixed text on a screen that fetches
+                nothing, and a speed is exactly the sort of figure an operator
+                repeats to a customer asking where their load is.
+              */}
+              <Text style={styles.driverPhone}>{vehicleType || '—'}</Text>
             </View>
-            <Text style={styles.gps}>GPS · 12s ago</Text>
+            {/*
+              Removed. `GPS · 12s ago` was fixed text, so a lorry that had not
+              reported for an hour still claimed a fix from twelve seconds ago
+              — which is the one thing on this card an operator would use to
+              decide whether to worry.
+            */}
           </View>
         </Card>
 
@@ -221,24 +351,52 @@ export const TripDetailsScreen: React.FC = () => {
         <Text style={[styles.section, styles.sectionGap]}>CUSTOMER</Text>
         <Card padding={11} style={styles.customerRow}>
           <View style={styles.customerTile}>
-            <Text style={styles.customerInitials}>SS</Text>
+            <Text style={styles.customerInitials}>
+              {initialsOf(customerName)}
+            </Text>
           </View>
           <View style={styles.driverBody}>
-            <Text style={styles.driverName}>Sri Sai Traders</Text>
-            <Text style={styles.driverPhone}>Rajesh K · +91 98765 43210</Text>
+            <Text style={styles.driverName} numberOfLines={1}>
+              {customerName}
+            </Text>
+            <Text style={styles.driverPhone} numberOfLines={1}>
+              {[customerContact, customerMobile].filter(Boolean).join(' · ') ||
+                'No contact on file'}
+            </Text>
           </View>
+          {/*
+            Rings the customer, not the driver.
+            
+            This button called `callDriver` — the same handler as the card
+            above it — so the office rang the driver while believing they were
+            ringing the shipper.
+          */}
           <Pressable
-            onPress={callDriver}
+            onPress={callCustomer}
+            disabled={!customerMobile}
             accessibilityRole="button"
-            accessibilityLabel="Call Sri Sai Traders"
-            style={({ pressed }) => [styles.callNavy, pressed && styles.pressed]}
+            accessibilityState={{ disabled: !customerMobile }}
+            accessibilityLabel={
+              customerMobile ? `Call ${customerName}` : 'No number on file'
+            }
+            style={({ pressed }) => [
+              styles.callNavy,
+              !customerMobile && styles.callOff,
+              pressed && styles.pressed,
+            ]}
           >
             <Icon name="phone" size={14} color={palette.white} />
           </Pressable>
         </Card>
 
         {/* Documents */}
-        <Text style={[styles.section, styles.sectionGap]}>DOCUMENTS · 5</Text>
+        {/*
+          Counted, not claimed. The heading said `DOCUMENTS · 5` while the
+          grid below drew four tiles, on every trip.
+        */}
+        <Text style={[styles.section, styles.sectionGap]}>
+          DOCUMENTS · {docCount}
+        </Text>
         <View style={styles.docGrid}>
           {DOCS.map(doc => (
             <Pressable
@@ -263,6 +421,8 @@ export const TripDetailsScreen: React.FC = () => {
             </Pressable>
           ))}
         </View>
+        </>
+        ) : null}
       </Content>
 
       <Footer row>
@@ -380,6 +540,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  callOff: { opacity: 0.45 },
   callNavy: {
     width: s(30),
     height: s(30),

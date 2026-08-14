@@ -8,7 +8,6 @@ import MapView, {
 } from 'react-native-maps';
 
 import { Icon } from './Icon';
-import { PulseGlow } from './Animations';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -34,6 +33,23 @@ export type FleetVehicle = {
   position: LatLng;
   /** Moving vehicles get the pulsing gold halo; parked ones sit flat. */
   moving?: boolean;
+  /**
+   * Degrees clockwise from north, when the vehicle's own tracker reports it.
+   *
+   * Drawn as a wedge on the rim of the puck. Absent for a position that came
+   * from the driver's phone, which reports where a lorry is but not which way
+   * it is facing — so the wedge simply is not drawn, rather than pointing
+   * north and lying.
+   */
+  heading?: number | null;
+  /**
+   * True when nothing has been heard for long enough to distrust the position.
+   *
+   * Drawn hollow. A lorry that stopped reporting twenty minutes ago is not in
+   * the same state as one parked with its engine off, and a map that draws
+   * them identically is how an operator rings the wrong driver.
+   */
+  stale?: boolean;
 };
 
 export type FleetMapProps = {
@@ -58,27 +74,131 @@ export type FleetMapProps = {
  * the coordinate.
  */
 const PUCK = 26;
-const PLATE_GAP = 2;
+/**
+ * The box the puck sits inside, and the heading wedge rotates within.
+ *
+ * Larger than the puck on purpose: the wedge that shows which way the cab is
+ * pointing sweeps a full circle, so it needs room on every side. Because the
+ * bitmap is clipped to the view, that room has to be reserved here rather than
+ * discovered at render time.
+ */
+const HALO = 38;
+const PLATE_GAP = 3;
 const PLATE_HEIGHT = 15;
-/** Wide enough for `AP 31 XX 1234` at 7px without the plate being trimmed. */
-const MARKER_WIDTH = 92;
-const MARKER_HEIGHT = PUCK + PLATE_GAP + PLATE_HEIGHT;
-/** Puck centre, as a fraction of the whole marker. */
-const PUCK_CENTRE_Y = PUCK / 2 / MARKER_HEIGHT;
+/**
+ * Wide enough for the longest plate in the fleet, with room to spare.
+ *
+ * The marker is rasterised to the size of its view, so this is a hard ceiling
+ * on the registration rather than a suggestion: a plate that needs more is
+ * ellipsised, and half a registration on a fleet map is worse than none —
+ * `AP 31 XX 1234` and `AP 31 XX 7034` differ in one character near the end.
+ * 118 fits every format the fleet holds at this weight, including the spaced
+ * ones, on the narrowest device the app supports.
+ */
+const MARKER_WIDTH = 118;
+const MARKER_HEIGHT = HALO + PLATE_GAP + PLATE_HEIGHT;
+/**
+ * Puck centre, as a fraction of the whole marker.
+ *
+ * Derived rather than typed: the truck lands on its coordinate only if this
+ * tracks the geometry above, and a hand-tuned number silently drifts the
+ * moment any of it changes.
+ */
+const PUCK_CENTRE_Y = HALO / 2 / MARKER_HEIGHT;
 
 /** Muted styling so the map sits behind the brand UI instead of fighting it. */
+/**
+ * A quiet base map, so the lorries are the only thing on it that shouts.
+ *
+ * The default Google style is built for a person finding a restaurant: shops,
+ * parks, bus routes and full-strength road colours, all competing with a
+ * marker for the same attention. On a fleet board none of that is being looked
+ * for — the question is only ever "where are my trucks, and which way are they
+ * going".
+ *
+ * So the ground is desaturated to near-paper, the road network is kept but
+ * pushed back to a hierarchy of greys with the arterials a shade darker, and
+ * everything that is neither road, water nor place name is turned off. The
+ * gold and red pucks then sit on a background that has nothing else in those
+ * hues, which is what makes them legible at a glance rather than merely
+ * present.
+ */
 const MAP_STYLE = [
+  /* Clutter: shops, parks, bus stops, business labels. */
   { featureType: 'poi', stylers: [{ visibility: 'off' }] },
   { featureType: 'transit', stylers: [{ visibility: 'off' }] },
   {
-    featureType: 'water',
-    elementType: 'geometry',
-    stylers: [{ color: '#e8eef7' }],
+    featureType: 'administrative.land_parcel',
+    stylers: [{ visibility: 'off' }],
   },
+  { featureType: 'administrative.neighborhood', stylers: [{ visibility: 'off' }] },
+
+  /* Ground and water: two flat, cool neutrals. */
   {
     featureType: 'landscape',
     elementType: 'geometry',
-    stylers: [{ color: '#f5f7fa' }],
+    stylers: [{ color: '#f4f6fa' }],
+  },
+  {
+    featureType: 'water',
+    elementType: 'geometry',
+    stylers: [{ color: '#dde7f2' }],
+  },
+  {
+    featureType: 'water',
+    elementType: 'labels.text.fill',
+    stylers: [{ color: '#93a7bd' }],
+  },
+
+  /*
+   * Roads, kept but recessive.
+   *
+   * Removing them entirely reads as prettier and is worse: without a road
+   * network an operator cannot tell whether a stopped lorry is on a highway
+   * or in a yard. They are drawn in greys instead, with the arterials and
+   * highways progressively darker so the shape of the route survives.
+   */
+  {
+    featureType: 'road',
+    elementType: 'geometry',
+    stylers: [{ color: '#ffffff' }],
+  },
+  {
+    featureType: 'road',
+    elementType: 'labels.text.fill',
+    stylers: [{ color: '#9aa8b8' }],
+  },
+  {
+    featureType: 'road',
+    elementType: 'labels.icon',
+    stylers: [{ visibility: 'off' }],
+  },
+  {
+    featureType: 'road.arterial',
+    elementType: 'geometry',
+    stylers: [{ color: '#f0f3f7' }],
+  },
+  {
+    featureType: 'road.highway',
+    elementType: 'geometry',
+    stylers: [{ color: '#e4e9f0' }],
+  },
+  {
+    featureType: 'road.highway',
+    elementType: 'geometry.stroke',
+    stylers: [{ color: '#d5dde7' }],
+  },
+
+  /* Place names stay — a position means little without a town beside it. */
+  {
+    featureType: 'administrative',
+    elementType: 'labels.text.fill',
+    stylers: [{ color: '#7d8da0' }],
+  },
+  {
+    featureType: 'administrative.province',
+    elementType: 'geometry.stroke',
+    stylers: [{ color: '#dfe6ee' }],
   },
 ];
 
@@ -215,20 +335,68 @@ const FleetMapComponent: React.FC<FleetMapProps> = ({
               puts the truck on the coordinate.
             */}
             <View style={styles.puckWrap}>
-              {vehicle.moving ? (
-                <PulseGlow color={palette.gold} opacity={0.35} duration={1600} />
-              ) : null}
-              <View
-                style={[
-                  vehicle.moving ? styles.puck : styles.puckStopped,
-                  vehicle.id === selectedId ? styles.puckSelected : null,
-                ]}
-              >
-                <Icon
-                  name="truck"
-                  size={12}
-                  color={vehicle.moving ? palette.navy : palette.red}
-                />
+              {/*
+                The halo holds everything that is round: the pulse, the
+                direction wedge and the disc, stacked concentrically so the
+                truck's centre stays exactly on the coordinate whichever of
+                them are drawn.
+              */}
+              <View style={styles.halo}>
+                {/*
+                  No halo behind the puck.
+                  
+                  A pulsing gold disc sat under every moving lorry, which on a
+                  pale map read as a yellow smear rather than as emphasis —
+                  and with several trucks in a yard the smears merged into one
+                  patch. The gold *ring* already says the lorry is moving, and
+                  says it more precisely.
+                */}
+                {/*
+                  Which way the cab is pointing.
+                  
+                  Only drawn when the vehicle's own tracker reported a heading
+                  — a position relayed from the driver's phone knows where the
+                  lorry is but not its bearing, and a wedge defaulting to north
+                  would be a confident lie. Rotating the whole box keeps the
+                  wedge on the rim at any angle.
+                */}
+                {typeof vehicle.heading === 'number' && vehicle.moving ? (
+                  <View
+                    style={[
+                      styles.headingRing,
+                      { transform: [{ rotate: `${vehicle.heading}deg` }] },
+                    ]}
+                    pointerEvents="none"
+                  >
+                    <View
+                      style={[
+                        styles.headingWedge,
+                        vehicle.stale ? styles.headingWedgeStale : null,
+                      ]}
+                    />
+                  </View>
+                ) : null}
+
+                <View
+                  style={[
+                    styles.puckBase,
+                    vehicle.moving ? styles.puckMoving : styles.puckStopped,
+                    vehicle.stale ? styles.puckStale : null,
+                    vehicle.id === selectedId ? styles.puckSelected : null,
+                  ]}
+                >
+                  <Icon
+                    name="truck"
+                    size={12}
+                    color={
+                      vehicle.stale
+                        ? palette.slate400
+                        : vehicle.moving
+                          ? palette.navy
+                          : palette.red
+                    }
+                  />
+                </View>
               </View>
               <View style={styles.plate} pointerEvents="none">
                 <Text style={styles.plateText} numberOfLines={1}>
@@ -258,28 +426,70 @@ const styles = StyleSheet.create({
     height: s(MARKER_HEIGHT),
     alignItems: 'center',
   },
-  puck: {
+  /* Everything round, concentric, centred on the coordinate. */
+  halo: {
+    width: s(HALO),
+    height: s(HALO),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  /*
+   * The rotating frame the direction wedge lives on.
+   *
+   * Rotating this rather than the wedge keeps the wedge's own geometry
+   * upright and its position on the rim exact at any bearing — rotating a
+   * child about an offset origin is where this kind of indicator usually
+   * drifts a few degrees.
+   */
+  headingRing: {
+    position: 'absolute',
+    width: s(HALO),
+    height: s(HALO),
+    alignItems: 'center',
+  },
+  /*
+   * A triangle, made from borders.
+   *
+   * React Native has no polygon; a zero-width box with two transparent side
+   * borders and one coloured bottom border is the standard way to get one,
+   * and it costs no image and no SVG dependency.
+   */
+  headingWedge: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: s(4),
+    borderRightWidth: s(4),
+    borderBottomWidth: s(6),
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: palette.navy,
+  },
+  headingWedgeStale: { borderBottomColor: palette.slate400 },
+
+  puckBase: {
     width: s(PUCK),
     height: s(PUCK),
     borderRadius: radius.full,
     backgroundColor: palette.white,
     borderWidth: s(2),
-    borderColor: palette.gold,
     alignItems: 'center',
     justifyContent: 'center',
     ...shadows.mapPuck,
   },
+  puckMoving: { borderColor: palette.gold },
   /* A stopped lorry reads red, matching the legend and the list beside it. */
-  puckStopped: {
-    width: s(PUCK),
-    height: s(PUCK),
-    borderRadius: radius.full,
-    backgroundColor: palette.white,
-    borderWidth: s(2),
-    borderColor: palette.red,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...shadows.mapPuck,
+  puckStopped: { borderColor: palette.red },
+  /*
+   * Nothing heard for a while: drawn hollow and grey.
+   *
+   * Distinct from "parked", which is a lorry we are hearing from and which is
+   * not moving. Collapsing the two is how an operator ends up ringing a driver
+   * who is fine, and not ringing the one whose tracker has died.
+   */
+  puckStale: {
+    borderColor: palette.slate400,
+    backgroundColor: palette.navyTint,
   },
   /*
    * In normal flow under the puck, not absolutely positioned.
@@ -288,25 +498,43 @@ const styles = StyleSheet.create({
    * marker bitmap is the size of the view, so the half of the plate that sat
    * beyond it was simply not drawn.
    */
+  /*
+   * The registration, on a plate rather than bare text.
+   *
+   * A hairline of gold and a slightly deeper navy than the UI behind it: on a
+   * near-white map, unbordered dark text at 7px reads as a smudge at a glance,
+   * and the border is what gives it an edge to resolve against.
+   */
   plate: {
     marginTop: s(PLATE_GAP),
     height: s(PLATE_HEIGHT),
     maxWidth: s(MARKER_WIDTH),
     justifyContent: 'center',
-    paddingHorizontal: s(5),
+    paddingHorizontal: s(6),
     backgroundColor: palette.navy,
     borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(245,166,35,0.55)',
+    ...shadows.mapPuck,
   },
-  plateText: font(7, '800', { color: palette.white }),
+  plateText: font(7, '800', { color: palette.white, letterSpacing: 0.3 }),
   /*
    * The picked-out lorry, made obvious without resizing the marker — changing
    * its box would change the anchor fraction with it, and put the truck back
    * off its coordinate.
    */
+  /*
+   * The picked-out lorry: a heavier navy ring, and nothing else.
+   *
+   * It used to be filled `goldTint`, which changed the disc from white to
+   * yellow and made the truck inside it hard to read — the fill competed with
+   * the icon it was meant to draw attention to. Thickening the ring picks the
+   * lorry out without touching what is inside it, and keeps the marker the
+   * same size, which matters because its box determines the anchor.
+   */
   puckSelected: {
     borderColor: palette.navy,
     borderWidth: s(3),
-    backgroundColor: palette.goldTint,
   },
 });
 

@@ -57,6 +57,16 @@ function toRow(trip: LiveTrip) {
 
   return {
     /*
+     * What the vehicle's own tracker reports, passed to the map.
+     *
+     * `heading` lets the marker point the way the cab is facing; `stale` lets
+     * it draw a lorry we have stopped hearing from differently from one that
+     * is simply parked. Both are absent for a position relayed by the driver's
+     * phone, and the map draws neither rather than guessing.
+     */
+    heading: trip.heading ?? null,
+    stale,
+    /*
      * Two ids, and they are not interchangeable.
      *
      * `id` keys the row and the marker — it must be unique per row, and a
@@ -148,6 +158,8 @@ export const LiveFleetMapScreen: React.FC = () => {
           registration: row.plate,
           position: row.position as FleetVehicle['position'],
           moving: row.moving,
+          heading: row.heading,
+          stale: row.stale,
         })),
     [rows],
   );
@@ -215,6 +227,17 @@ export const LiveFleetMapScreen: React.FC = () => {
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, styles.legendRed]} />
               <Text style={styles.legendText}>Stopped</Text>
+            </View>
+            {/*
+              The third state the map now draws.
+              
+              A legend that names two of three colours is worse than none: an
+              operator sees a grey puck, finds no grey in the key, and reads it
+              as one of the two that are listed.
+            */}
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, styles.legendStale]} />
+              <Text style={styles.legendText}>No signal</Text>
             </View>
           </View>
 
@@ -465,6 +488,11 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: s(3) },
   legendDot: { width: s(6), height: s(6), borderRadius: radius.full },
   legendGold: { backgroundColor: palette.gold },
+  legendStale: {
+    backgroundColor: palette.navyTint,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.slate400,
+  },
   legendRed: { backgroundColor: palette.red },
   legendText: font(8, '800', { color: palette.navy }),
 

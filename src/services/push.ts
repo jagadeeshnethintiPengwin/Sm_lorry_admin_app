@@ -102,6 +102,31 @@ export async function registerForPush(): Promise<void> {
 }
 
 /**
+ * The token this handset is registered under, for retiring it at sign-out.
+ *
+ * Bounded, and that is the whole point. `getToken` reaches Firebase's servers,
+ * and on a weak connection it can sit there for a long time with no timeout of
+ * its own — which is fine when it happens in the background after sign-in, and
+ * not fine at all on the one action a user takes when they want to leave. Two
+ * seconds is longer than a working network needs and short enough that a
+ * broken one does not hold up a sign-out.
+ *
+ * A device that never registered, or one where the answer does not arrive in
+ * time, simply sends nothing, and the server leaves its stored registration
+ * alone.
+ */
+export async function currentPushToken(): Promise<string | undefined> {
+  try {
+    return await Promise.race([
+      getToken(getMessaging()).then(token => token || undefined),
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 2000)),
+    ]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Keeps the server's copy current.
  *
  * Firebase reissues a registration on reinstall, on a restore to a new handset,

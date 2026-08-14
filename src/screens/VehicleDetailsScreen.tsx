@@ -199,6 +199,36 @@ export const VehicleDetailsScreen: React.FC = () => {
     user?: { name?: string; mobile?: string };
   } | null;
   const registration = String(data?.registration ?? '');
+  const driverName = driver?.user?.name ?? '';
+  const driverInitials =
+    driverName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || '—';
+
+  /*
+   * The chips under the plate: state, insurance, fitness.
+   *
+   * They were three fixed labels — IN TRIP, INSURED, FIT OK — so a lorry laid
+   * up in the workshop with lapsed insurance advertised itself as on the road
+   * and covered. `docs` already carries the health the backend computed from
+   * each paper's expiry, so the chips read from that.
+   */
+  const healthOf = (kind: string): string | undefined => {
+    /*
+     * Read from the raw rows, not from `docs`.
+     *
+     * `docsOf` projects them into display shape and drops `kind` and `health`
+     * on the way, which are exactly the two fields a chip needs.
+     */
+    const rows = (data?.documents ?? []) as Array<Record<string, any>>;
+    const row = rows.find(d =>
+      String(d.kind ?? '').toUpperCase().startsWith(kind),
+    );
+    return row ? String(row.health ?? '') || undefined : undefined;
+  };
 
   const callDriver = useCallback(() => {
     const mobile = driver?.user?.mobile;
@@ -322,22 +352,38 @@ export const VehicleDetailsScreen: React.FC = () => {
               </View>
               <View style={styles.heroText}>
                 <Text style={styles.heroKicker}>REG NUMBER</Text>
-                <Text style={styles.heroReg}>AP 31 XX 1234</Text>
-                <Text style={styles.heroModel}>Tata LPT 1109 · 14 Ft Truck</Text>
+                <Text style={styles.heroReg}>{registration || '—'}</Text>
+                <Text style={styles.heroModel}>
+                  {[data?.make, data?.model, data?.type]
+                    .filter(Boolean)
+                    .join(' · ') || '—'}
+                </Text>
               </View>
             </View>
 
             <View style={styles.heroChips}>
-              <View style={styles.heroChipGold}>
-                <BlinkDot color={palette.gold} size={5} />
-                <Text style={styles.heroChipGoldText}>IN TRIP</Text>
+              <View style={trip ? styles.heroChipGold : styles.heroChip}>
+                {trip ? <BlinkDot color={palette.gold} size={5} /> : null}
+                <Text
+                  style={trip ? styles.heroChipGoldText : styles.heroChipText}
+                >
+                  {String(data?.status ?? '—').replace(/_/g, ' ')}
+                </Text>
               </View>
-              <View style={styles.heroChip}>
-                <Text style={styles.heroChipText}>INSURED</Text>
-              </View>
-              <View style={styles.heroChip}>
-                <Text style={styles.heroChipText}>FIT OK</Text>
-              </View>
+              {healthOf('INS') ? (
+                <View style={styles.heroChip}>
+                  <Text style={styles.heroChipText}>
+                    {healthOf('INS') === 'VALID' ? 'INSURED' : `INS ${healthOf('INS')}`}
+                  </Text>
+                </View>
+              ) : null}
+              {healthOf('FIT') ? (
+                <View style={styles.heroChip}>
+                  <Text style={styles.heroChipText}>
+                    {healthOf('FIT') === 'VALID' ? 'FIT OK' : `FIT ${healthOf('FIT')}`}
+                  </Text>
+                </View>
+              ) : null}
             </View>
           </View>
         </LinearGradient>
@@ -352,25 +398,45 @@ export const VehicleDetailsScreen: React.FC = () => {
               end={{ x: 1, y: 1 }}
               style={styles.driverAvatar}
             >
-              <Text style={styles.driverInitials}>RK</Text>
+              <Text style={styles.driverInitials}>{driverInitials}</Text>
             </LinearGradient>
             <View style={styles.presence} />
           </View>
 
           <View style={styles.driverBody}>
-            <Text style={styles.driverName}>Ramesh Kumar</Text>
+            {/*
+              The driver actually assigned to this lorry — or a plain line
+              saying there isn't one. `Ramesh Kumar · 240 trips · 98% on-time`
+              appeared even on an unassigned truck, and nothing in the system
+              measures on-time performance per driver at all.
+            */}
+            <Text style={styles.driverName}>
+              {driverName || 'No driver assigned'}
+            </Text>
             <View style={styles.driverMeta}>
-              <Icon name="check-circle-2" size={12} color={palette.gold} />
-              <Text style={styles.driverTrips}>240 trips</Text>
-              <Text style={styles.driverStats}>· 98% on-time · 4y</Text>
+              {driver?.user?.mobile ? (
+                <>
+                  <Icon name="check-circle-2" size={12} color={palette.gold} />
+                  <Text style={styles.driverTrips}>{driver.user.mobile}</Text>
+                </>
+              ) : (
+                <Text style={styles.driverStats}>
+                  Assign one from the fleet list
+                </Text>
+              )}
             </View>
           </View>
 
           <Pressable
             onPress={callDriver}
             accessibilityRole="button"
-            accessibilityLabel="Call Ramesh Kumar"
-            style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
+            accessibilityLabel={driverName ? `Call ${driverName}` : 'No driver assigned'}
+            disabled={!driver?.user?.mobile}
+            style={({ pressed }) => [
+              styles.callBtn,
+              pressed && styles.pressed,
+              !driver?.user?.mobile && styles.callDisabled,
+            ]}
           >
             <Icon name="phone" size={14} color={palette.navy} />
           </Pressable>
@@ -649,6 +715,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  callDisabled: { opacity: 0.4 },
   driverInitials: font(12, '800', { color: palette.white }),
   presence: {
     position: 'absolute',

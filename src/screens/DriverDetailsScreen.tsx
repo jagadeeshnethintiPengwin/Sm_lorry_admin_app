@@ -43,32 +43,7 @@ type KycRow = {
   color: string;
 };
 
-const KYC: KycRow[] = [
-  {
-    id: 'dl',
-    title: 'Driving License',
-    meta: 'DLAP 04...123456 · Till 2029',
-    icon: 'id-card',
-    bg: palette.goldTint,
-    color: palette.gold,
-  },
-  {
-    id: 'aadhar',
-    title: 'Aadhar',
-    meta: 'XXXX XXXX 4521',
-    icon: 'fingerprint',
-    bg: palette.navyTint,
-    color: palette.navy,
-  },
-  {
-    id: 'pan',
-    title: 'PAN Card',
-    meta: 'ABCDE1234F',
-    icon: 'credit-card',
-    bg: palette.redTint,
-    color: palette.red,
-  },
-];
+
 
 export const DriverDetailsScreen: React.FC = () => {
   const navigation =
@@ -91,6 +66,91 @@ export const DriverDetailsScreen: React.FC = () => {
     registration?: string;
   } | null;
   const mobile = (data?.user as { mobile?: string } | undefined)?.mobile;
+  const name = (data?.user as { name?: string } | undefined)?.name ?? '—';
+  const initials =
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || '—';
+
+  /*
+   * The papers this driver actually has on file.
+   *
+   * `KYC` was three literals — `DLAP 04...123456 · Till 2029`, Aadhaar ending
+   * 4521, PAN `ABCDE1234F` — shown identically for every driver in the roster,
+   * including one who had uploaded nothing. The API returns the real rows,
+   * each with the health the backend computed from its expiry.
+   */
+  /** The licence, which hangs off the driver rather than the document rows. */
+  const licence = data?.licenceNumber
+    ? [
+        String(data.licenceNumber),
+        data.licenceValid
+          ? `Till ${new Date(String(data.licenceValid)).getFullYear()}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : null;
+
+  const kyc = useMemo<KycRow[]>(() => {
+    const look: Record<string, { title: string; icon: IconName; bg: string; color: string }> = {
+      DL: { title: 'Driving License', icon: 'id-card', bg: palette.goldTint, color: palette.gold },
+      LICENCE: { title: 'Driving License', icon: 'id-card', bg: palette.goldTint, color: palette.gold },
+      AADHAAR: { title: 'Aadhaar', icon: 'fingerprint', bg: palette.navyTint, color: palette.navy },
+      AADHAAR_BACK: { title: 'Aadhaar (back)', icon: 'fingerprint', bg: palette.navyTint, color: palette.navy },
+      PAN: { title: 'PAN Card', icon: 'credit-card', bg: palette.redTint, color: palette.red },
+    };
+    const rows = (data?.documents ?? []) as Array<Record<string, any>>;
+    return rows.map(row => {
+      const kind = String(row.kind ?? '');
+      const style = look[kind] ?? {
+        title: kind.replace(/_/g, ' '),
+        icon: 'file-text' as IconName,
+        bg: palette.navyTint,
+        color: palette.navy,
+      };
+      const till = row.expiresAt
+        ? `Till ${new Date(row.expiresAt).getFullYear()}`
+        : null;
+      /*
+       * The licence number lives on the driver, not on the document row.
+       * `Document.number` is null for scans filed by the Add Driver screen,
+       * so the DL row would read a bare "On file" while the number the office
+       * typed in sat one field away.
+       */
+      const isLicence = kind === 'DL' || kind === 'LICENCE';
+      return {
+        id: String(row.id),
+        title: style.title,
+        meta:
+          (isLicence ? licence : null) ??
+          ([row.number, till].filter(Boolean).join(' · ') || 'On file'),
+        icon: style.icon,
+        bg: style.bg,
+        color: style.color,
+      };
+    });
+  }, [data?.documents, licence]);
+
+  /** How long they have been with the firm, from `joinedAt`. */
+  const tenure = (() => {
+    if (!data?.joinedAt) {
+      return '—';
+    }
+    const months = Math.max(
+      0,
+      Math.round(
+        (Date.now() - new Date(String(data.joinedAt)).getTime()) /
+          (1000 * 60 * 60 * 24 * 30.44),
+      ),
+    );
+    return months >= 12 ? `${Math.floor(months / 12)}y` : `${months}m`;
+  })();
+
+
 
   /* The trip this driver is on, if any — matched on the live board. */
   const live = useApi(() => tripService.live(), []);
@@ -154,25 +214,36 @@ export const DriverDetailsScreen: React.FC = () => {
                 style={styles.avatarRing}
               />
               <View style={styles.avatar}>
-                <Text style={styles.avatarText}>RK</Text>
+                <Text style={styles.avatarText}>{initials}</Text>
               </View>
               <View style={styles.presence} />
             </View>
 
             <View style={styles.heroBody}>
-              <Text style={styles.heroName}>Ramesh Kumar</Text>
-              <Text style={styles.heroPhone}>+91 98765 43210</Text>
+              <Text style={styles.heroName}>{name}</Text>
+              <Text style={styles.heroPhone}>{mobile ?? 'No number on file'}</Text>
+              {/*
+                The driver's real state. This chip said VERIFIED · ONLINE for
+                everyone, including drivers who were off duty or suspended.
+              */}
               <View style={styles.verifiedChip}>
                 <Icon name="badge-check" size={10} color={palette.navy} />
-                <Text style={styles.verifiedText}>VERIFIED · ONLINE</Text>
+                <Text style={styles.verifiedText}>
+                  {String(data?.status ?? '—').replace(/_/g, ' ')}
+                </Text>
               </View>
             </View>
 
             <Pressable
               onPress={call}
               accessibilityRole="button"
-              accessibilityLabel="Call Ramesh Kumar"
-              style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
+              accessibilityLabel={`Call ${name}`}
+              disabled={!mobile}
+              style={({ pressed }) => [
+                styles.callBtn,
+                pressed && styles.pressed,
+                !mobile && styles.callDisabled,
+              ]}
             >
               <Icon name="phone" size={16} color={palette.navy} />
             </Pressable>
@@ -185,23 +256,37 @@ export const DriverDetailsScreen: React.FC = () => {
             <View style={[styles.stat, styles.statDivider]}>
               <View style={styles.statValueRow}>
                 <Icon name="truck" size={12} color={palette.gold} />
-                <Text style={styles.statValue}>240</Text>
+                {/*
+                  Real counters. These read 240 trips, 4 years and 98% on time
+                  for every driver — including one hired last week with none.
+                */}
+                <Text style={styles.statValue}>
+                  {Number(data?.totalTrips ?? 0)}
+                </Text>
               </View>
               <Text style={styles.statLabel}>TRIPS</Text>
             </View>
             <View style={[styles.stat, styles.statDivider]}>
               <View style={styles.statValueRow}>
                 <Icon name="calendar-days" size={12} color={palette.gold} />
-                <Text style={styles.statValue}>4y</Text>
+                <Text style={styles.statValue}>{tenure}</Text>
               </View>
-              <Text style={styles.statLabel}>EXPERIENCE</Text>
+              <Text style={styles.statLabel}>WITH SMT</Text>
             </View>
             <View style={styles.stat}>
               <View style={styles.statValueRow}>
                 <Icon name="check-circle-2" size={12} color={palette.gold} />
-                <Text style={styles.statValue}>98%</Text>
+                {/*
+                  Rating, not an on-time percentage — nothing in the system
+                  measures punctuality per driver, so 98% was an invention.
+                */}
+                <Text style={styles.statValue}>
+                  {Number(data?.rating ?? 0) > 0
+                    ? Number(data?.rating).toFixed(1)
+                    : '—'}
+                </Text>
               </View>
-              <Text style={styles.statLabel}>ON TIME</Text>
+              <Text style={styles.statLabel}>RATING</Text>
             </View>
           </View>
         </View>
@@ -212,7 +297,7 @@ export const DriverDetailsScreen: React.FC = () => {
           <Pressable
             onPress={openTrip}
             accessibilityRole="button"
-            accessibilityLabel="Open current trip TR-2026-8836"
+            accessibilityLabel={trip ? `Open current trip ${trip.reference}` : 'No trip running'}
             style={({ pressed }) => [pressed && styles.pressed]}
           >
             <LinearGradient
@@ -221,15 +306,41 @@ export const DriverDetailsScreen: React.FC = () => {
               end={{ x: 1, y: 1 }}
               style={styles.tripCard}
             >
-              <View style={styles.tripHead}>
-                <Text style={styles.tripRef}>#TR-2026-8836</Text>
-                <Text style={styles.tripKm}>128/620 KM</Text>
-              </View>
-              <View style={styles.tripRoute}>
-                <Text style={styles.tripCity}>Vizag</Text>
-                <Icon name="arrow-right" size={14} color={palette.gold} />
-                <Text style={styles.tripCity}>Hyderabad</Text>
-              </View>
+              {/*
+                The trip this driver is actually on, matched off the live
+                board — or a plain line saying there isn't one. The card used
+                to show `#TR-2026-8836 · 128/620 KM · Vizag → Hyderabad` for
+                every driver on the roster, idle ones included.
+              */}
+              {trip ? (
+                <>
+                  <View style={styles.tripHead}>
+                    <Text style={styles.tripRef}>{trip.reference}</Text>
+                    <Text style={styles.tripKm}>
+                      {Math.round(Number(trip.coveredKm ?? 0))}/
+                      {Math.round(Number(trip.distanceKm ?? 0))} KM
+                    </Text>
+                  </View>
+                  {/*
+                    The live board sends the leg as one `A → B` string rather
+                    than two fields, so it is split on the arrow it already
+                    contains instead of asking the API to change shape.
+                  */}
+                  <View style={styles.tripRoute}>
+                    <Text style={styles.tripCity} numberOfLines={1}>
+                      {trip.route?.split('→')[0]?.trim() || '—'}
+                    </Text>
+                    <Icon name="arrow-right" size={14} color={palette.gold} />
+                    <Text style={styles.tripCity} numberOfLines={1}>
+                      {trip.route?.split('→')[1]?.trim() || '—'}
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.noTrip}>
+                  {live.loading ? 'Checking…' : 'Not on a trip right now'}
+                </Text>
+              )}
             </LinearGradient>
           </Pressable>
         </View>
@@ -241,7 +352,11 @@ export const DriverDetailsScreen: React.FC = () => {
             padding={11}
             marginBottom={0}
             onPress={openVehicle}
-            accessibilityLabel="Open vehicle AP 31 XX 1234"
+            accessibilityLabel={
+              vehicle?.registration
+                ? `Open vehicle ${vehicle.registration}`
+                : 'No vehicle assigned'
+            }
             style={styles.vehicleRow}
           >
             <IconWell
@@ -253,8 +368,17 @@ export const DriverDetailsScreen: React.FC = () => {
               borderRadius={radius.lg}
             />
             <View style={styles.vehicleBody}>
-              <Text style={styles.vehicleReg}>AP 31 XX 1234</Text>
-              <Text style={styles.vehicleModel}>14 Ft Truck · Tata LPT 1109</Text>
+              <Text style={styles.vehicleReg}>
+                {vehicle?.registration ?? 'No vehicle assigned'}
+              </Text>
+              <Text style={styles.vehicleModel}>
+                {[
+                  (vehicle as Record<string, any> | null)?.type,
+                  (vehicle as Record<string, any> | null)?.model,
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || '—'}
+              </Text>
             </View>
             <Icon name="chevron-right" size={16} color={palette.slate400} />
           </Card>
@@ -264,10 +388,17 @@ export const DriverDetailsScreen: React.FC = () => {
         <View style={styles.block}>
           <Text style={styles.section}>PERSONAL DETAILS</Text>
           <View style={styles.kycCard}>
-            {KYC.map((row, index) => (
+            {!kyc.length ? (
+              <View style={styles.kycRow}>
+                <Text style={styles.noKyc}>
+                  No documents have been filed for this driver.
+                </Text>
+              </View>
+            ) : null}
+            {kyc.map((row, index) => (
               <View
                 key={row.id}
-                style={[styles.kycRow, index < KYC.length - 1 && styles.kycDivider]}
+                style={[styles.kycRow, index < kyc.length - 1 && styles.kycDivider]}
               >
                 <IconWell
                   icon={row.icon}
@@ -407,6 +538,9 @@ const styles = StyleSheet.create({
 
   vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
   vehicleBody: { flex: 1 },
+  callDisabled: { opacity: 0.4 },
+  noTrip: font(11, '700', { color: 'rgba(255,255,255,0.7)' }),
+  noKyc: font(11, '600', { color: palette.slate500 }),
   vehicleReg: font(11, '800', { color: palette.navy, letterSpacing: 0.5 }),
   vehicleModel: font(9, '400', { color: palette.slate500 }),
 

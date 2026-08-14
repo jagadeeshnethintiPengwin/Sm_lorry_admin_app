@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -25,6 +25,29 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s, wp } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { vehicleService } from '@services/fleet.service';
+import { uploadService } from '@services/upload.service';
+import { useDocumentPicker, useImagePicker } from '@hooks/useImagePicker';
+import type { PickedImage } from '@hooks/useImagePicker';
+
+/** A file that is on the server, plus the local copy used to preview it. */
+type StoredFile = {
+  name: string;
+  size: number;
+  url: string;
+  preview: string;
+  type: string;
+};
+
+/** `904 KB`, `1.2 MB` — the caption under an attached file. */
+const readableSize = (bytes: number): string => {
+  if (!bytes) {
+    return '';
+  }
+  return bytes < 1024 * 1024
+    ? `${Math.round(bytes / 1024)} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 /**
  * Screen 9 — Upload Document.
@@ -46,34 +69,131 @@ export const UploadDocumentScreen: React.FC = () => {
 
   // Reached from Add Vehicle the registration comes through as a param;
   // opened straight from a vehicle's document list it falls back to the mock.
-  const ownerLabel = route.params?.ownerLabel ?? 'AP 31 XX 1234';
+  const ownerId = route.params?.ownerId ?? null;
+  const ownerLabel = route.params?.ownerLabel ?? 'this vehicle';
 
-  const [front, setFront] = useState<{ name: string; size: string } | null>({
-    name: 'RC-front.jpg',
-    size: '842 KB',
-  });
-  const [back, setBack] = useState<{ name: string; size: string } | null>(null);
+  /*
+   * Empty, because nothing has been uploaded.
+   *
+   * The screen opened with `RC-front.jpg · 842 KB` already filled in, along
+   * with a registration number, both dates and an RTO — all carried over from
+   * the HTML mock, where they existed to show what a completed form looks
+   * like. On a real screen it meant every document appeared to be on file
+   * before anyone had touched it, and an operator pressing Save would have
+   * filed a record describing a scan that does not exist.
+   */
+  const [front, setFront] = useState<StoredFile | null>(null);
+  const [back, setBack] = useState<StoredFile | null>(null);
   const [target, setTarget] = useState<'front' | 'back' | null>(null);
 
-  const [rcNumber, setRcNumber] = useState('TS0987654321');
-  const [issueDate, setIssueDate] = useState('2022-04-15');
-  const [validTill, setValidTill] = useState('2037-04-14');
-  const [rto, setRto] = useState('RTA Hyderabad');
+  const [rcNumber, setRcNumber] = useState('');
+  const [issueDate, setIssueDate] = useState('');
+  const [validTill, setValidTill] = useState('');
+  const [rto, setRto] = useState('');
   const [reminder, setReminder] = useState(true);
+
+  const [uploading, setUploading] = useState<'front' | 'back' | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const { fromCamera, fromGallery } = useImagePicker();
+  const { pickDocument } = useDocumentPicker();
 
   const closeSheet = useCallback(() => setTarget(null), []);
 
-  const applyUpload = useCallback(
-    (name: string, size: string) => {
-      if (target === 'front') {
-        setFront({ name, size });
-      } else if (target === 'back') {
-        setBack({ name, size });
-      }
+  /**
+   * Attaches a real file to whichever side opened the sheet.
+   *
+   * Replaces `applyUpload('RC-photo.jpg', '1.2 MB')` — a filename and a size
+   * both invented by the screen, for a file that was never chosen and never
+   * sent anywhere.
+   */
+  const attach = useCallback(
+    async (pick: () => Promise<PickedImage[]>) => {
+      const side = target;
       setTarget(null);
+      if (!side) {
+        return;
+      }
+
+      const [file] = await pick();
+      if (!file) {
+        return;
+      }
+
+      setError(null);
+      setUploading(side);
+      try {
+        const stored = await uploadService.upload(file);
+        const held: StoredFile = {
+          name: file.fileName,
+          size: stored.size ?? file.fileSize,
+          url: stored.url,
+          preview: file.uri,
+          type: stored.mimetype ?? file.type,
+        };
+        if (side === 'front') {
+          setFront(held);
+        } else {
+          setBack(held);
+        }
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'That file could not be uploaded',
+        );
+      } finally {
+        setUploading(null);
+      }
     },
     [target],
   );
+
+  /**
+   * Files the scan against the truck's paper.
+   *
+   * The Save button called `goBack` and nothing else, so everything typed here
+   * was discarded — which is why `fileUrl` was null on every vehicle document
+   * in the fleet and the eye button had nothing to open.
+   */
+  const save = useCallback(async () => {
+    if (saving) {
+      return;
+    }
+    if (!ownerId) {
+      setError('This screen was opened without a vehicle to file against.');
+      return;
+    }
+    if (!front) {
+      setError('Attach the front of the document before saving.');
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const vehicle = await vehicleService.get(ownerId);
+      const rows = Array.isArray(vehicle.documents)
+        ? (vehicle.documents as Array<{ id: string; kind: string }>)
+        : [];
+      const rc = rows.find(row => row.kind === 'RC');
+      if (!rc) {
+        throw new Error('That vehicle has no RC record to file against');
+      }
+
+      await vehicleService.saveDocument(rc.id, {
+        fileUrl: front.url,
+        ...(rcNumber.trim() ? { number: rcNumber.trim() } : {}),
+        ...(validTill ? { expiresAt: validTill } : {}),
+      });
+      navigation.goBack();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Could not save the document',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [front, navigation, ownerId, rcNumber, saving, validTill]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -139,11 +259,24 @@ export const UploadDocumentScreen: React.FC = () => {
               style={styles.preview}
             >
               <View style={styles.previewBody}>
-                <View style={styles.previewTile}>
-                  <Icon name="file-text" size={20} color={palette.gold} />
-                </View>
-                <Text style={styles.previewName}>{front.name}</Text>
-                <Text style={styles.previewSize}>{front.size}</Text>
+                {front.type?.startsWith('image/') ? (
+                  /* The local file, so it appears instantly and cannot 401 —
+                     `GET /uploads/*` is behind the bearer guard. */
+                  <Image
+                    source={{ uri: front.preview }}
+                    style={styles.previewThumb}
+                  />
+                ) : (
+                  <View style={styles.previewTile}>
+                    <Icon name="file-text" size={20} color={palette.gold} />
+                  </View>
+                )}
+                <Text style={styles.previewName} numberOfLines={1}>
+                  {front.name}
+                </Text>
+                <Text style={styles.previewSize}>
+                  {['Uploaded', readableSize(front.size)].filter(Boolean).join(' · ')}
+                </Text>
               </View>
 
               <View style={styles.tagGreen}>
@@ -167,8 +300,12 @@ export const UploadDocumentScreen: React.FC = () => {
         ) : (
           <Pressable
             onPress={() => setTarget('front')}
+            disabled={uploading === 'front'}
             accessibilityRole="button"
-            accessibilityLabel="Upload front side"
+            accessibilityState={{ busy: uploading === 'front' }}
+            accessibilityLabel={
+              uploading === 'front' ? 'Uploading front side' : 'Upload front side'
+            }
             style={({ pressed }) => [styles.empty, pressed && styles.pressed]}
           >
             <View style={styles.emptyBody}>
@@ -180,7 +317,9 @@ export const UploadDocumentScreen: React.FC = () => {
                 color={palette.red}
                 borderRadius={radius.lg}
               />
-              <Text style={styles.emptyTitle}>Upload front side</Text>
+              <Text style={styles.emptyTitle}>
+                {uploading === 'front' ? 'Uploading…' : 'Upload front side'}
+              </Text>
               <Text style={styles.emptyMeta}>Both sides required</Text>
             </View>
             <View style={styles.tagRed}>
@@ -208,11 +347,24 @@ export const UploadDocumentScreen: React.FC = () => {
               style={styles.preview}
             >
               <View style={styles.previewBody}>
-                <View style={styles.previewTile}>
-                  <Icon name="file-text" size={20} color={palette.gold} />
-                </View>
-                <Text style={styles.previewName}>{back.name}</Text>
-                <Text style={styles.previewSize}>{back.size}</Text>
+                {back.type?.startsWith('image/') ? (
+                  /* The local file, so it appears instantly and cannot 401 —
+                     `GET /uploads/*` is behind the bearer guard. */
+                  <Image
+                    source={{ uri: back.preview }}
+                    style={styles.previewThumb}
+                  />
+                ) : (
+                  <View style={styles.previewTile}>
+                    <Icon name="file-text" size={20} color={palette.gold} />
+                  </View>
+                )}
+                <Text style={styles.previewName} numberOfLines={1}>
+                  {back.name}
+                </Text>
+                <Text style={styles.previewSize}>
+                  {['Uploaded', readableSize(back.size)].filter(Boolean).join(' · ')}
+                </Text>
               </View>
               <View style={styles.tagGreen}>
                 <Icon name="check" size={10} color={palette.white} />
@@ -233,8 +385,12 @@ export const UploadDocumentScreen: React.FC = () => {
           ) : (
             <Pressable
               onPress={() => setTarget('back')}
+              disabled={uploading === 'back'}
               accessibilityRole="button"
-              accessibilityLabel="Upload back side"
+              accessibilityState={{ busy: uploading === 'back' }}
+              accessibilityLabel={
+                uploading === 'back' ? 'Uploading back side' : 'Upload back side'
+              }
               style={({ pressed }) => [styles.emptyBack, pressed && styles.pressed]}
             >
               <View style={styles.emptyBody}>
@@ -246,7 +402,9 @@ export const UploadDocumentScreen: React.FC = () => {
                   color={palette.red}
                   borderRadius={radius.lg}
                 />
-                <Text style={styles.emptyTitle}>Upload back side</Text>
+                <Text style={styles.emptyTitle}>
+                {uploading === 'back' ? 'Uploading…' : 'Upload back side'}
+              </Text>
                 <Text style={styles.emptyMeta}>Both sides required</Text>
               </View>
               <View style={styles.tagRed}>
@@ -321,6 +479,13 @@ export const UploadDocumentScreen: React.FC = () => {
         </Card>
       </Content>
 
+      {error ? (
+        <View style={styles.errorBar}>
+          <Icon name="alert-circle" size={13} color={palette.red} />
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : null}
+
       <Footer row>
         <Button
           label="Cancel"
@@ -333,24 +498,26 @@ export const UploadDocumentScreen: React.FC = () => {
           onPress={navigation.goBack}
         />
         <Button
-          label="Save Document"
+          label={saving ? 'Saving…' : 'Save Document'}
           variant="gold"
           icon="check-circle-2"
           flex={1.6}
           padding={10}
           fontSize={11}
           gap={5}
-          onPress={navigation.goBack}
+          loading={saving}
+          onPress={save}
         />
       </Footer>
 
       <ImageSourceSheet
         visible={target !== null}
         onClose={closeSheet}
-        onCamera={() => applyUpload('RC-photo.jpg', '1.2 MB')}
-        onGallery={() => applyUpload('RC-scan.jpg', '904 KB')}
+        onCamera={() => attach(fromCamera)}
+        onGallery={() => attach(fromGallery)}
+        onDocument={() => attach(pickDocument)}
         title={target === 'back' ? 'Back Side' : 'Front Side'}
-        subtitle="JPG · PNG · Max 10 MB"
+        subtitle="JPG · PNG · PDF · Max 5 MB"
       />
     </Screen>
   );
@@ -423,6 +590,22 @@ const styles = StyleSheet.create({
   previewName: {
     ...font(9, '800', { color: palette.navy }),
     marginTop: s(6),
+  },
+  errorBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(6),
+    paddingHorizontal: s(12),
+    paddingBottom: s(6),
+  },
+  errorText: { ...font(10, '600', { color: palette.red }), flex: 1 },
+  previewThumb: {
+    width: s(52),
+    height: s(52),
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.gold,
+    marginBottom: s(6),
   },
   previewSize: {
     ...font(8, '700', { color: palette.slate500 }),

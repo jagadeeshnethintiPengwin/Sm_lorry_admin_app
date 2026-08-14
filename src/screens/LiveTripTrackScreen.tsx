@@ -15,6 +15,7 @@ import {
   TripMap,
   Icon,
   IconWell,
+  ListState,
   Screen,
 } from '@components/index';
 import { alpha, gradients, palette } from '@theme/colors';
@@ -23,39 +24,153 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { tripService } from '@services/fleet.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 21 — Live Trip Track.
  *
- *   navy MOVING strip (48 km/h · 42 km done · 263 km left) · grid map with
+ *   navy MOVING strip (km done · km total · km left) · grid map with
  *   radar rings round the truck puck, plate tag, zoom, recenter and coords ·
  *   CURRENT LOCATION · TRIP PROGRESS with the knob on the fill ·
  *   DRIVER & VEHICLE · Share / View Timeline footer
  */
-/**
- * Kompally (Hyderabad) -> Kadapa, the trip the mock's strip describes
- * (48 km/h, 42 km done, 263 km left). `current` is interpolated to the 14%
- * mark so the truck puck sits where the progress rail says it is.
- */
-const PICKUP = { latitude: 17.5416, longitude: 78.4795 };
-const DROP = { latitude: 14.4673, longitude: 78.8242 };
-const CURRENT = { latitude: 17.1112, longitude: 78.5278 };
 
 export const LiveTripTrackScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'LiveTripTrack'>>();
+  const { tripId } = route.params;
+
+  /*
+   * The trip, and where it currently is.
+   *
+   * Neither was fetched. The strip read `48 km/h · 42 km done · 263 km left`,
+   * the header `#TR-2026-8829 · AP 05 CH 9912`, and the map drew a fixed
+   * Hyderabad-to-Kadapa line with the lorry pinned 14% along it — on every
+   * trip in the fleet. The office watched an animation, not a vehicle.
+   *
+   * Two calls: the trip for who and what, and `tracking` for the live
+   * position, distance covered and the timeline.
+   */
+  const trip = useApi(() => tripService.get(tripId), [tripId]);
+  const live = useApi(() => tripService.tracking(tripId), [tripId]);
+
+  const record = (trip.data ?? null) as Record<string, any> | null;
+  const tracking = (live.data ?? null) as Record<string, any> | null;
+
+  const reference: string = record?.reference ?? tracking?.reference ?? '—';
+  const registration: string = record?.vehicle?.registration ?? '—';
+  const driverMobile: string = record?.driver?.user?.mobile ?? '';
+  const booking = record?.booking;
+
+  const distanceKm = Number(tracking?.distanceKm ?? record?.distanceKm ?? 0);
+  const coveredKm = Number(tracking?.coveredKm ?? record?.coveredKm ?? 0);
+  const remainingKm = Math.max(0, Math.round(distanceKm - coveredKm));
+
+  /*
+   * Where the lorry is, if it has reported.
+   *
+   * `null` until the driver starts and the first position arrives — the map
+   * below falls back to the route's own end points rather than inventing a
+   * coordinate, because a puck drawn on a guess is worse than no puck.
+   */
+  const current = tracking?.location
+    ? {
+        latitude: Number(tracking.location.lat),
+        longitude: Number(tracking.location.lng),
+      }
+    : null;
+
+  /*
+   * The two ends of the leg, from the booking the customer placed.
+   *
+   * Nullable in the schema — a booking the office typed in over the phone has
+   * no autocomplete behind it, so there is no coordinate to draw. When either
+   * end is missing the map is hidden rather than drawn to (0, 0), which is in
+   * the Atlantic and reads as a lorry that has fallen off the world.
+   */
+  const pickup =
+    booking?.pickupLat != null && booking?.pickupLng != null
+      ? { latitude: Number(booking.pickupLat), longitude: Number(booking.pickupLng) }
+      : null;
+  const drop =
+    booking?.dropLat != null && booking?.dropLng != null
+      ? { latitude: Number(booking.dropLat), longitude: Number(booking.dropLng) }
+      : null;
+  const mappable = pickup != null && drop != null;
+
+  const progress = Number(tracking?.progress ?? 0);
+  const speedKmph =
+    tracking?.location?.speedKph != null
+      ? Math.round(Number(tracking.location.speedKph))
+      : null;
+
+  const driverName: string = record?.driver?.user?.name ?? '—';
+  const driverInitials = driverName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w: string) => w[0]?.toUpperCase() ?? '')
+    .join('') || '—';
+
+  const vehicleLine = [record?.vehicle?.type, record?.vehicle?.model]
+    .filter(Boolean)
+    .join(' · ');
+
+  /** The fix's age, which is the honest version of "48 km/h · moving". */
+  const fixAge = (() => {
+    const at = tracking?.location?.recordedAt;
+    if (!at) {
+      return null;
+    }
+    const secs = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 1000));
+    if (secs < 60) {
+      return `${secs}s ago`;
+    }
+    if (secs < 3600) {
+      return `${Math.round(secs / 60)}m ago`;
+    }
+    return `${Math.round(secs / 3600)}h ago`;
+  })();
+
+  const clock = (value?: string | null) =>
+    value
+      ? new Date(value).toLocaleTimeString('en-IN', {
+          hour: 'numeric',
+          minute: '2-digit',
+        })
+      : '—';
 
   const call = useCallback(() => {
-    Linking.openURL('tel:+918886321044').catch(() => undefined);
-  }, []);
+    if (!driverMobile) {
+      return;
+    }
+    Linking.openURL(`tel:${driverMobile}`).catch(() => undefined);
+  }, [driverMobile]);
 
+  /**
+   * Shares this trip, not a fixed sentence.
+   *
+   * It read "Track SMT trip #TR-2026-8829 — AP 05 CH 9912, currently near
+   * Chevella toll" whatever was on screen, so an operator forwarding a status
+   * to a customer sent them another consignment's reference and plate.
+   */
   const share = useCallback(() => {
+    const where = booking
+      ? `${booking.pickupPlace} → ${booking.dropPlace}`
+      : '';
     Share.share({
-      message:
-        'Track SMT trip #TR-2026-8829 — AP 05 CH 9912, currently near Chevella toll.',
+      message: [
+        `SMT trip ${reference}`,
+        registration !== '—' ? `— ${registration}` : '',
+        where ? `· ${where}` : '',
+        distanceKm > 0 ? `· ${Math.round(coveredKm)}/${Math.round(distanceKm)} km` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
     }).catch(() => undefined);
-  }, []);
+  }, [booking, coveredKm, distanceKm, reference, registration]);
 
   const openTimeline = useCallback(
     () => navigation.navigate('TripTimeline', { tripId: route.params.tripId }),
@@ -66,12 +181,32 @@ export const LiveTripTrackScreen: React.FC = () => {
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Track Live"
-        subtitle="#TR-2026-8829 · AP 05 CH 9912"
+        subtitle={`${reference} · ${registration}`}
         showBack
         onBackPress={navigation.goBack}
       />
 
       <Content padding={12} contentStyle={styles.contentTop}>
+        {/*
+          Loading, failure and not-found were all unreachable before, because
+          nothing was ever requested — the invented lorry rendered instantly
+          and always, on a route it had never driven.
+        */}
+        <ListState
+          loading={trip.loading}
+          error={trip.error}
+          empty={!trip.loading && !trip.error && !record}
+          what="trip"
+          emptyIcon="truck"
+          emptyHint="This trip could not be found."
+          onRetry={() => {
+            trip.refetch();
+            live.refetch();
+          }}
+        />
+
+        {record ? (
+        <>
         {/* Live status strip */}
         <LinearGradient
           colors={gradients.navyHero as unknown as string[]}
@@ -80,40 +215,79 @@ export const LiveTripTrackScreen: React.FC = () => {
           style={styles.strip}
         >
           <View style={styles.stripHead}>
+            {/*
+              The trip's own state, and the age of the last fix.
+              
+              The chip blinked `MOVING` and the corner read `UPDATED 12s AGO`
+              on a trip that had not started and had never reported — the two
+              pieces of the screen that most look like proof of life were the
+              two with nothing behind them. The dot only blinks when a fix has
+              actually arrived recently.
+            */}
             <View style={styles.movingChip}>
-              <BlinkDot color={palette.gold} size={5} />
-              <Text style={styles.movingText}>MOVING</Text>
+              {fixAge ? <BlinkDot color={palette.gold} size={5} /> : null}
+              <Text style={styles.movingText}>
+                {(record?.status ?? live.data ? tracking?.status : '') || '—'}
+              </Text>
             </View>
-            <Text style={styles.updated}>UPDATED 12s AGO</Text>
+            <Text style={styles.updated}>
+              {fixAge ? `UPDATED ${fixAge.toUpperCase()}` : 'NO POSITION YET'}
+            </Text>
           </View>
 
           <View style={styles.stripStats}>
             <View style={[styles.stripStat, styles.stripDivider]}>
-              <Text style={styles.stripValue}>48</Text>
-              <Text style={styles.stripLabel}>KM/H</Text>
-            </View>
-            <View style={[styles.stripStat, styles.stripDivider]}>
-              <Text style={styles.stripValue}>42</Text>
+              {/*
+                Distance run, not a speed.
+                
+                The strip led with `48 KM/H`, which the API does not report —
+                and a speed is the figure an operator repeats to a customer
+                asking how far off the lorry is. Covered kilometres is the
+                thing that is actually known.
+              */}
+              <Text style={styles.stripValue}>{Math.round(coveredKm)}</Text>
               <Text style={styles.stripLabel}>KM DONE</Text>
             </View>
+            <View style={[styles.stripStat, styles.stripDivider]}>
+              <Text style={styles.stripValue}>{Math.round(distanceKm)}</Text>
+              <Text style={styles.stripLabel}>KM TOTAL</Text>
+            </View>
             <View style={styles.stripStat}>
-              <Text style={styles.stripValue}>263</Text>
+              <Text style={styles.stripValue}>{remainingKm}</Text>
               <Text style={styles.stripLabel}>KM LEFT</Text>
             </View>
           </View>
         </LinearGradient>
 
-        {/* Map */}
+        {/*
+          The map, only when there is a route to draw.
+          
+          Pickup and drop are nullable — a booking taken over the phone has no
+          coordinates behind its typed address. Rendering anyway would put both
+          pins at (0, 0), so the screen says so instead.
+        */}
+        {!mappable ? (
+          <View style={styles.noMap}>
+            <Icon name="map-pin" size={18} color={palette.slate400} />
+            <Text style={styles.noMapText}>
+              This booking has no pickup or drop coordinates, so the route
+              cannot be drawn.
+            </Text>
+          </View>
+        ) : (
         <TripMap
-          pickup={PICKUP}
-          drop={DROP}
-          current={CURRENT}
+          pickup={pickup!}
+          drop={drop!}
+          current={current ?? pickup!}
           height={220}
           style={styles.map}
         >
           {/* Info tag above vehicle */}
           <View style={styles.plateTag}>
-            <Text style={styles.plateText}>AP 05 CH 9912 · 48 km/h</Text>
+            <Text style={styles.plateText}>
+              {registration}
+              {speedKmph != null ? ` · ${speedKmph} km/h` : ''}
+            </Text>
           </View>
 
           {/* Zoom */}
@@ -146,9 +320,20 @@ export const LiveTripTrackScreen: React.FC = () => {
           {/* Coord badge */}
           <View style={styles.coords}>
             <Icon name="map-pin" size={10} color={palette.navy} />
-            <Text style={styles.coordsText}>17.4126° N, 78.7642° E</Text>
+            {/*
+              The lorry's own coordinates, or the pickup's until it reports.
+              
+              This read `17.4126° N, 78.7642° E` on every trip — a fixed point
+              south-east of Hyderabad that belonged to no consignment.
+            */}
+            <Text style={styles.coordsText}>
+              {(current ?? pickup)
+                ? `${(current ?? pickup)!.latitude.toFixed(4)}° N, ${(current ?? pickup)!.longitude.toFixed(4)}° E`
+                : 'No position yet'}
+            </Text>
           </View>
         </TripMap>
+        )}
 
         {/* Current location */}
         <Text style={styles.section}>CURRENT LOCATION</Text>
@@ -163,12 +348,33 @@ export const LiveTripTrackScreen: React.FC = () => {
               borderRadius={radius.md}
             />
             <View style={styles.locBody}>
-              <Text style={styles.locName}>NH-65 near Chevella toll</Text>
-              <Text style={styles.locMeta}>Ranga Reddy district, Telangana</Text>
+              {/*
+                What is known, not a place name we cannot resolve.
+                
+                There is no reverse geocoder behind this screen, so the mock's
+                `NH-65 near Chevella toll / Ranga Reddy district` was pure
+                invention. The leg and the freshness of the fix are the two
+                things the API actually reports, and both are what an operator
+                on the phone to a customer needs.
+              */}
+              <Text style={styles.locName}>
+                {booking ? `${booking.pickupPlace} → ${booking.dropPlace}` : '—'}
+              </Text>
+              <Text style={styles.locMeta}>
+                {current
+                  ? `${current.latitude.toFixed(4)}, ${current.longitude.toFixed(4)}`
+                  : 'The lorry has not reported a position yet'}
+              </Text>
               <View style={styles.locStats}>
-                <Text style={styles.locSpeed}>48 km/h</Text>
-                <Text style={styles.locDot}>·</Text>
-                <Text style={styles.locHeading}>Heading south-west</Text>
+                <Text style={styles.locSpeed}>
+                  {speedKmph != null ? `${speedKmph} km/h` : `${progress}% done`}
+                </Text>
+                {fixAge ? (
+                  <>
+                    <Text style={styles.locDot}>·</Text>
+                    <Text style={styles.locHeading}>Updated {fixAge}</Text>
+                  </>
+                ) : null}
               </View>
             </View>
           </View>
@@ -179,12 +385,20 @@ export const LiveTripTrackScreen: React.FC = () => {
         <Card padding={12} marginBottom={10}>
           <View style={styles.progHead}>
             <View>
-              <Text style={styles.progLabel}>KOMPALLY</Text>
-              <Text style={styles.progValue}>6:12 AM · Started</Text>
+              <Text style={styles.progLabel} numberOfLines={1}>
+                {(booking?.pickupPlace ?? '—').toUpperCase()}
+              </Text>
+              <Text style={styles.progValue}>
+                {record?.startedAt ? `${clock(record.startedAt)} · Started` : 'Not started'}
+              </Text>
             </View>
             <View style={styles.progRight}>
-              <Text style={styles.progLabel}>KADAPA</Text>
-              <Text style={styles.progValue}>ETA 2:35 PM</Text>
+              <Text style={styles.progLabel} numberOfLines={1}>
+                {(booking?.dropPlace ?? '—').toUpperCase()}
+              </Text>
+              <Text style={styles.progValue}>
+                {record?.deliveredAt ? `${clock(record.deliveredAt)} · Delivered` : `${remainingKm} km to go`}
+              </Text>
             </View>
           </View>
 
@@ -193,15 +407,17 @@ export const LiveTripTrackScreen: React.FC = () => {
               colors={[palette.gold, palette.red]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
-              style={styles.fill}
+              style={[styles.fill, { width: `${Math.min(100, Math.max(2, progress))}%` }]}
             >
               <View style={styles.knob} />
             </LinearGradient>
           </View>
 
           <View style={styles.progFoot}>
-            <Text style={styles.progCovered}>42 km covered</Text>
-            <Text style={styles.progLeft}>263 km left · 14% done</Text>
+            <Text style={styles.progCovered}>{Math.round(coveredKm)} km covered</Text>
+            <Text style={styles.progLeft}>
+              {remainingKm} km left · {progress}% done
+            </Text>
           </View>
         </Card>
 
@@ -215,19 +431,24 @@ export const LiveTripTrackScreen: React.FC = () => {
               end={{ x: 1, y: 1 }}
               style={styles.driverAvatar}
             >
-              <Text style={styles.driverInitials}>PK</Text>
+              <Text style={styles.driverInitials}>{driverInitials}</Text>
             </LinearGradient>
 
             <View style={styles.driverBody}>
-              <Text style={styles.driverName}>Prakash Reddy</Text>
-              <Text style={styles.driverMeta}>+91 88863 21044 · 388 trips</Text>
+              <Text style={styles.driverName}>{driverName}</Text>
+              <Text style={styles.driverMeta}>{driverMobile || 'No number on file'}</Text>
             </View>
 
             <Pressable
               onPress={call}
               accessibilityRole="button"
-              accessibilityLabel="Call Prakash Reddy"
-              style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
+              accessibilityLabel={`Call ${driverName}`}
+              disabled={!driverMobile}
+              style={({ pressed }) => [
+                styles.callBtn,
+                pressed && styles.pressed,
+                !driverMobile && styles.callDisabled,
+              ]}
             >
               <Icon name="phone" size={14} color={palette.navy} />
             </Pressable>
@@ -245,13 +466,13 @@ export const LiveTripTrackScreen: React.FC = () => {
               borderRadius={radius.md}
             />
             <View style={styles.driverBody}>
-              <Text style={styles.plate}>AP 05 CH 9912</Text>
-              <Text style={styles.driverMeta}>
-                22 Ft Trailer · Bharat Benz 2523R
-              </Text>
+              <Text style={styles.plate}>{registration}</Text>
+              <Text style={styles.driverMeta}>{vehicleLine || '—'}</Text>
             </View>
           </View>
         </Card>
+        </>
+        ) : null}
       </Content>
 
       <Footer row>
@@ -414,7 +635,6 @@ const styles = StyleSheet.create({
     borderRadius: s(6),
   },
   fill: {
-    width: '14%',
     height: '100%',
     borderRadius: s(6),
     justifyContent: 'center',
@@ -454,6 +674,20 @@ const styles = StyleSheet.create({
     marginTop: s(1),
   },
   plate: font(11, '800', { color: palette.navy, letterSpacing: 0.5 }),
+  /** A driver with no number on file: the button stays, visibly inert. */
+  callDisabled: { opacity: 0.4 },
+  noMap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 14,
+    marginBottom: 10,
+    borderRadius: radius.lg,
+    backgroundColor: palette.surfaceAlt,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  noMapText: { ...font(11, '600', { color: palette.slate500 }), flex: 1 },
   callBtn: {
     width: s(32),
     height: s(32),

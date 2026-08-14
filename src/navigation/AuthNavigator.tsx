@@ -4,10 +4,16 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SplashScreen } from '@screens/SplashScreen';
 import { LoginScreen } from '@screens/LoginScreen';
 import { OtpVerificationScreen } from '@screens/OtpVerificationScreen';
-import { ForgotPinScreen } from '@screens/ForgotPinScreen';
-import { ResetPinScreen } from '@screens/ResetPinScreen';
 import type { AuthStackParamList } from './types';
 
+/*
+ * No PIN routes.
+ *
+ * Signing in is the registered number and a code sent to it, so there is no
+ * PIN to forget or reset and nothing navigates to either screen. The screen
+ * files are left in place — restoring the flow is re-registering them here and
+ * putting the links back on `LoginScreen`.
+ */
 const Stack = createNativeStackNavigator<AuthStackParamList>();
 
 export const AuthNavigator: React.FC = () => (
@@ -20,16 +26,6 @@ export const AuthNavigator: React.FC = () => (
     <Stack.Screen
       name="OtpVerification"
       component={OtpVerificationScreen}
-      options={{ animation: 'slide_from_right' }}
-    />
-    <Stack.Screen
-      name="ForgotPin"
-      component={ForgotPinScreen}
-      options={{ animation: 'slide_from_right' }}
-    />
-    <Stack.Screen
-      name="ResetPin"
-      component={ResetPinScreen}
       options={{ animation: 'slide_from_right' }}
     />
   </Stack.Navigator>

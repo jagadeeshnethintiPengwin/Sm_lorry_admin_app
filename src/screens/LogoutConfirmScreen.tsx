@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -12,13 +12,15 @@ import {
   IconWell,
   Screen,
 } from '@components/index';
-import { useAppDispatch } from '@store/index';
+import { useAppDispatch, useAppSelector } from '@store/index';
 import { logout } from '@store/slices/auth.slice';
 import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import { reportService } from '@services/report.service';
+import { useApi } from '@hooks/useApi';
 
 /**
  * Screen 27 — Logout Confirm.
@@ -33,6 +35,20 @@ export const LogoutConfirmScreen: React.FC = () => {
   const rootNavigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const dispatch = useAppDispatch();
+  /* Whoever is about to be signed out. */
+  const profile = useAppSelector(state => state.auth.profile);
+
+  /*
+   * What is still open, for the warning below.
+   *
+   * The same summary the dashboard is built from, so the two screens cannot
+   * disagree about how much work is outstanding. It is allowed to fail
+   * silently — a sign-out sheet must not be blocked by a report call, and the
+   * warning simply is not drawn if the counts never arrive.
+   */
+  const summary = useApi(() => reportService.dashboard(), []);
+  const pending = Number(summary.data?.pendingBookings ?? 0);
+  const running = Number(summary.data?.activeTrips ?? 0);
 
   const [busy, setBusy] = useState(false);
 
@@ -64,7 +80,28 @@ export const LogoutConfirmScreen: React.FC = () => {
     } catch {
       // Already handled in the service; the reset below is what matters.
     } finally {
-      rootNavigation.reset({ index: 0, routes: [{ name: 'Auth' }] });
+      /*
+       * Cleared before leaving.
+       *
+       * It never was, which did not show while both buttons stayed live —
+       * and the moment they were disabled on `busy`, one press killed them
+       * both for good. If the reset below ever fails to unmount this screen,
+       * the sheet has to be usable again rather than frozen.
+       */
+      setBusy(false);
+      /*
+       * Straight to the sign-in screen, not to `Auth`'s own entry point.
+       *
+       * The auth stack starts on `Splash`, whose job is to decide where a
+       * *returning* user belongs — so resetting to `Auth` sent a person who
+       * had just signed out through a loading screen that re-checks the
+       * session it has this moment destroyed. Naming `Login` skips a step
+       * that can only reach one conclusion.
+       */
+      rootNavigation.reset({
+        index: 0,
+        routes: [{ name: 'Auth', params: { screen: 'Login' } }],
+      });
     }
   }, [busy, dispatch, rootNavigation]);
 
@@ -103,20 +140,57 @@ export const LogoutConfirmScreen: React.FC = () => {
         <View style={styles.center}>
           <Text style={styles.title}>Log out of admin app?</Text>
           <Text style={styles.body}>
-            You&apos;ll stop receiving alerts &amp; real-time fleet updates. Sign
-            in with <Text style={styles.bodyStrong}>+91 98980 XXXXX</Text>.
+            {/*
+              The number this account actually signs in with. It read
+              `+91 98980 XXXXX` — a masked number belonging to nobody — so the
+              one line telling an owner how to get back in was wrong.
+            */}
+            You&apos;ll stop receiving alerts &amp; real-time fleet updates.
+            {profile?.mobile ? (
+              <>
+                {' '}Sign in with{' '}
+                <Text style={styles.bodyStrong}>{profile.mobile}</Text>.
+              </>
+            ) : null}
           </Text>
         </View>
 
-        {/* Warning */}
-        <View style={styles.warningBox}>
-          <Icon name="alert-triangle" size={16} color={palette.gold} />
-          <Text style={styles.warningText}>
-            <Text style={styles.warningStrong}>7 pending bookings</Text> awaiting
-            approval · <Text style={styles.warningStrong}>18 trips</Text> in
-            transit will continue.
-          </Text>
-        </View>
+        {/*
+          What signing out leaves behind, counted rather than asserted.
+          
+          This said `7 pending bookings awaiting approval · 18 trips in transit`
+          to everyone, always — including at 2am with an empty board. An owner
+          deciding whether to sign out was reading two invented numbers.
+          
+          The counts come from the same summary the dashboard uses, and the
+          box is not drawn at all while they are unknown or zero: a warning
+          about nothing is worse than no warning.
+        */}
+        {pending > 0 || running > 0 ? (
+          <View style={styles.warningBox}>
+            <Icon name="alert-triangle" size={16} color={palette.gold} />
+            <Text style={styles.warningText}>
+              {pending > 0 ? (
+                <>
+                  <Text style={styles.warningStrong}>
+                    {pending} pending {pending === 1 ? 'booking' : 'bookings'}
+                  </Text>{' '}
+                  awaiting approval
+                </>
+              ) : null}
+              {pending > 0 && running > 0 ? ' · ' : null}
+              {running > 0 ? (
+                <>
+                  <Text style={styles.warningStrong}>
+                    {running} {running === 1 ? 'trip' : 'trips'}
+                  </Text>{' '}
+                  in transit will continue
+                </>
+              ) : null}
+              .
+            </Text>
+          </View>
+        ) : null}
 
         {/* Session info */}
         <View style={styles.session}>
@@ -129,9 +203,26 @@ export const LogoutConfirmScreen: React.FC = () => {
             borderRadius={radius.md}
           />
           <View style={styles.sessionBody}>
-            <Text style={styles.sessionTitle}>iPhone 17 · Hyderabad</Text>
+            {/*
+              The account being signed out, which is the one thing this row
+              can honestly say.
+              
+              It read `iPhone 17 · Hyderabad · Active since 18 May · 2FA
+              verified` — a device, a city, a date and a security claim, none
+              of which the app knows and none of which were true. The last was
+              the worst of them: this account signs in with a PIN, and telling
+              an operator two-factor was verified is the sort of assurance
+              somebody makes a decision on.
+              
+              Who is signed in and on what platform are both known for certain,
+              so those are what it shows.
+            */}
+            <Text style={styles.sessionTitle} numberOfLines={1}>
+              {profile?.name ?? 'This account'}
+              {profile?.mobile ? ` · ${profile.mobile}` : ''}
+            </Text>
             <Text style={styles.sessionMeta}>
-              Active since 18 May · 2FA verified
+              Signed in on this {Platform.OS === 'ios' ? 'iPhone' : 'device'}
             </Text>
           </View>
         </View>
@@ -143,10 +234,19 @@ export const LogoutConfirmScreen: React.FC = () => {
             flex={1}
             padding={12}
             fontSize={12}
+            /*
+             * Closed off once the sign-out is under way.
+             *
+             * The two buttons were both live throughout, so Cancel during a
+             * slow request dismissed the sheet while the session was already
+             * being torn down — leaving the operator on a signed-in-looking
+             * screen whose every request was about to fail.
+             */
+            disabled={busy}
             onPress={navigation.goBack}
           />
           <Button
-            label="Yes, Log out"
+            label={busy ? 'Signing out…' : 'Yes, Log out'}
             variant="red"
             icon="log-out"
             iconSize={14}
@@ -154,6 +254,15 @@ export const LogoutConfirmScreen: React.FC = () => {
             padding={12}
             fontSize={12}
             gap={5}
+            /*
+             * Says what it is doing.
+             *
+             * `confirm` already refused a second press, but silently — so a
+             * button that looked idle while the request ran invited exactly
+             * that, and read as broken when nothing happened.
+             */
+            loading={busy}
+            disabled={busy}
             onPress={confirm}
           />
         </View>

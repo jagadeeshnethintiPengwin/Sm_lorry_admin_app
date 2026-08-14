@@ -1,8 +1,6 @@
-import { getMessaging, getToken } from '@react-native-firebase/messaging';
-
 import { apiClient, setAuthToken } from './api.client';
 import { connectRealtime, disconnectRealtime } from './realtime';
-import { registerForPush } from './push';
+import { currentPushToken, registerForPush } from './push';
 import { session } from './storage';
 import type { OwnerProfile } from '@apptypes/index';
 
@@ -203,20 +201,67 @@ export const authService = {
      * never registered, or one where Firebase is unavailable, simply sends
      * nothing and the account's other handset keeps its registration.
      */
-    let pushToken: string | undefined;
-    try {
-      pushToken = (await getToken(getMessaging())) || undefined;
-    } catch {
-      // No registration to retire — nothing to say.
-    }
+    /*
+     * Read before the session goes, and bounded to two seconds inside
+     * `currentPushToken` — a handset that cannot reach Firebase simply retires
+     * no registration rather than delaying the sign-out.
+     */
+    const pushToken = await currentPushToken();
 
-    await apiClient
-      .post('/auth/logout', { refreshToken, pushToken })
-      .catch(() => {
-        // A failed logout must still clear the local session.
-      });
+    /*
+     * The token, kept for the request that is about to end it.
+     *
+     * The local session is cleared first — see below — and the interceptor
+     * reads the bearer from exactly that storage, so without holding a copy
+     * the sign-out request would go out unauthenticated, get a 401, and revoke
+     * nothing at all on the server.
+     */
+    const bearer = session.getToken();
+
+    /*
+     * Signed out of this device immediately, told to the server afterwards.
+     *
+     * This used to run the other way round: a Firebase lookup, then a request
+     * with a twenty-second timeout, and only then was the local session
+     * cleared. On a weak connection the button did nothing visible for the
+     * better part of half a minute, which reads as broken — and an operator
+     * handing over a phone wants it signed out now, not once a server has
+     * agreed. Locally it is already gone by the time the request is made.
+     */
     await setAuthToken(null);
     /* The socket is authenticated by the token that just went; drop it too. */
     disconnectRealtime();
+
+    /*
+     * Bounded well under the client default. Revocation matters, but a slow
+     * network must not hold a person on a screen they have asked to leave —
+     * and an unreachable server cannot keep them signed in, because the
+     * credentials are already gone from this handset.
+     */
+    /*
+     * Sent, but not waited for.
+     *
+     * Revoking the session on the server matters and is not something the
+     * operator should be held on a screen for: by this line the credentials
+     * are already gone from this handset, so there is nothing left for the
+     * request to protect them from. Awaiting it meant the sign-out took as
+     * long as the network did — up to six seconds of a dead-looking button on
+     * a bad connection, which is what made this read as broken.
+     *
+     * The bearer is passed explicitly because the interceptor reads it from
+     * storage, which has just been cleared.
+     */
+    apiClient
+      .post(
+        '/auth/logout',
+        { refreshToken, pushToken },
+        {
+          timeout: 6000,
+          ...(bearer ? { headers: { Authorization: `Bearer ${bearer}` } } : {}),
+        },
+      )
+      .catch(() => {
+        // A failed logout must still clear the local session — already done.
+      });
   },
 };
