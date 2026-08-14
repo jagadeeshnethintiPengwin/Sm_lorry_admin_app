@@ -136,6 +136,9 @@ export type NewDriver = {
   email?: string;
   licenceNumber: string;
   licenceValid: string;
+  /** The photograph taken on the Add Driver screen, once uploaded. */
+  photoUrl?: string;
+  address?: string;
 };
 
 /** What Add New Vehicle sends. */
@@ -165,6 +168,19 @@ export const driverService = {
     const { data } = await apiClient.patch<AdminDriver>(`/drivers/${id}`, body);
     return data;
   },
+  /**
+   * Files a licence or KYC scan against a driver.
+   *
+   * Upserts by kind, so re-photographing an expired licence replaces the scan
+   * rather than leaving two rows for the same paper.
+   */
+  saveDocument: async (
+    driverId: string,
+    body: { kind: string; number?: string; expiresAt?: string; fileUrl?: string },
+  ): Promise<void> => {
+    await apiClient.post(`/drivers/${driverId}/documents`, body);
+  },
+
   remove: (id: string) => apiClient.delete(`/drivers/${id}`),
 };
 
@@ -172,6 +188,22 @@ export const vehicleService = {
   page: (params?: Record<string, unknown>) => pageOf<AdminVehicle>('/vehicles', params),
   list: (params?: Record<string, unknown>) => listOf<AdminVehicle>('/vehicles', params),
   available: () => listOf<AdminVehicle>('/vehicles/available'),
+
+  /**
+   * The vehicle types the business actually offers.
+   *
+   * The Add Vehicle form carried its own hardcoded list — `Mini Truck`,
+   * `14 Ft Truck`, `22 Ft Trailer` — and not one entry matched the `VehicleType`
+   * catalogue the rest of the system runs on (`Tata Ace`, `Tata 407`,
+   * `14 Feet Truck`, `Trailer`). A customer books `Tata Ace`; the office
+   * registered lorries as `14 Ft Truck`; the two strings never met. Every
+   * truck added through that screen was invisible to type filtering and to
+   * anything matching a booking against the fleet.
+   */
+  types: () =>
+    listOf<{ id: string; name: string; capacityLabel?: string }>(
+      '/vehicles/types',
+    ),
   get: (id: string) => oneOf<AdminVehicle>(`/vehicles/${id}`),
   create: async (body: NewVehicle): Promise<AdminVehicle> => {
     const { data } = await apiClient.post<AdminVehicle>('/vehicles', body);
@@ -199,6 +231,22 @@ export const vehicleService = {
       `/vehicles/documents/${id}/download`,
     );
     return data.url;
+  },
+
+  /**
+   * Files a scan against one of a truck's papers.
+   *
+   * `PATCH` rather than `POST`, because the rows already exist: creating a
+   * vehicle seeds one document per kind (RC, INS, FIT, PUC) with nothing
+   * attached, and this fills one in. The id is the *document's*, which is why
+   * the created vehicle has to be read for its documents before this can be
+   * called.
+   */
+  saveDocument: async (
+    documentId: string,
+    body: { fileUrl?: string; number?: string; expiresAt?: string },
+  ): Promise<void> => {
+    await apiClient.patch(`/vehicles/documents/${documentId}`, body);
   },
 
   remove: (id: string) => apiClient.delete(`/vehicles/${id}`),

@@ -1,5 +1,12 @@
 import React, { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 
@@ -21,6 +28,9 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import { driverService } from '@services/fleet.service';
+import { uploadService } from '@services/upload.service';
+import { useDocumentPicker, useImagePicker } from '@hooks/useImagePicker';
+import type { PickedImage } from '@hooks/useImagePicker';
 import {
   isClean,
   packLicence,
@@ -41,6 +51,36 @@ import {
  *   UPLOAD DOCUMENTS dashed gold tiles · gold Add Driver footer
  */
 const LICENCE_CLASSES = ['HMV', 'MGV', 'LMV', 'MCWG'];
+
+/**
+ * A file that is on the server, plus the local copy used to preview it.
+ *
+ * `url` is where it now lives and is what gets filed against the driver.
+ * `preview` is the picker's own `file://` path on this handset, and it is what
+ * renders — `GET /uploads/*` sits behind the bearer guard, and an `<Image>`
+ * issues a plain GET with no Authorization header, so pointing a thumbnail at
+ * `url` gives a 401 and a blank square over a file that uploaded perfectly.
+ */
+type StoredFile = {
+  name: string;
+  size: number;
+  url: string;
+  preview: string;
+  type: string;
+};
+
+/** Which paper each document tile files against. */
+const SLOT_KIND: Record<string, string> = { dl: 'DL', kyc: 'AADHAAR' };
+
+/** `904 KB`, `1.2 MB` — the caption under a filled tile. */
+const readableSize = (bytes: number): string => {
+  if (!bytes) {
+    return '';
+  }
+  return bytes < 1024 * 1024
+    ? `${Math.round(bytes / 1024)} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 /** The fields the form validates, which is what `errors` is keyed by. */
 type DriverForm = {
@@ -68,6 +108,26 @@ export const AddDriverScreen: React.FC = () => {
   const [pan, setPan] = useState('');
   const [target, setTarget] = useState<string | null>(null);
 
+  /**
+   * What has actually been attached, and to which tile.
+   *
+   * There was no state here at all: the photo tile and both document tiles
+   * opened a sheet whose Camera, Gallery and Files buttons were each wired
+   * straight to `closeSheet`. Tapping any of them dismissed the sheet and did
+   * nothing else — no picker, no file, no upload, and no way for the screen to
+   * have remembered one if there had been.
+   */
+  const [photo, setPhoto] = useState<StoredFile | null>(null);
+  const [docs, setDocs] = useState<Record<string, StoredFile | null>>({
+    dl: null,
+    kyc: null,
+  });
+  const [uploading, setUploading] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const { fromCamera, fromGallery } = useImagePicker();
+  const { pickDocument } = useDocumentPicker();
+
   const [errors, setErrors] = useState<Errors<DriverForm>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -81,6 +141,62 @@ export const AddDriverScreen: React.FC = () => {
   }, []);
 
   const closeSheet = useCallback(() => setTarget(null), []);
+
+  /**
+   * Attaches a real file to whichever tile opened the sheet.
+   *
+   * The picker runs, the bytes go to the server, and the tile is filled only
+   * by a URL the server gave back. A cancelled picker leaves the tile
+   * untouched; a failed upload says why and leaves it empty, which is the
+   * honest state — a tile that looks filled over nothing is how a driver ends
+   * up on the roster with no licence on file.
+   */
+  const attach = useCallback(
+    async (pick: () => Promise<PickedImage[]>) => {
+      const slot = target;
+      // Closed first: the picker takes over the screen, and leaving the sheet
+      // underneath means it is still there when the camera returns.
+      setTarget(null);
+      if (!slot) {
+        return;
+      }
+
+      const [file] = await pick();
+      if (!file) {
+        // Dismissing the picker is an ordinary outcome, not a failure.
+        return;
+      }
+
+      setUploadError(null);
+      setUploading(slot);
+      try {
+        const stored = await uploadService.upload(file);
+        const held: StoredFile = {
+          // The picker's name, not the server's: `filename` comes back as a
+          // 32-character hex key, which tells an operator nothing.
+          name: file.fileName,
+          size: stored.size ?? file.fileSize,
+          url: stored.url,
+          preview: file.uri,
+          type: stored.mimetype ?? file.type,
+        };
+        if (slot === 'photo') {
+          setPhoto(held);
+        } else {
+          setDocs(current => ({ ...current, [slot]: held }));
+        }
+      } catch (error) {
+        setUploadError(
+          error instanceof Error
+            ? error.message
+            : 'That file could not be uploaded',
+        );
+      } finally {
+        setUploading(null);
+      }
+    },
+    [target],
+  );
 
   /**
    * Registers the driver and their sign-in account.
@@ -109,14 +225,67 @@ export const AddDriverScreen: React.FC = () => {
 
     setSaving(true);
     try {
-      await driverService.create({
+      const created = await driverService.create({
         name: name.trim(),
         // The API normalises to E.164 itself; sending the ten national digits
         // is what the +91 prefix on the field already promised.
         mobile: packMobile(mobile),
         licenceNumber: packLicence(dlNumber),
         licenceValid: validTill,
+        /*
+         * The photograph and the address, both of which the form has always
+         * collected and never sent. Omitted rather than sent empty: they are
+         * optional, and a blank string fails the DTO's length rule and would
+         * reject an otherwise valid driver.
+         */
+        ...(photo ? { photoUrl: photo.url } : {}),
+        ...(address.trim() ? { address: address.trim() } : {}),
       });
+
+      /*
+       * The scans, filed against the driver who now exists.
+       *
+       * Deliberately not fatal: the driver is already on the roster by this
+       * point, and their papers can be filed later from the driver's own
+       * screen. Failing here would leave an operator believing the whole thing
+       * had failed and adding them a second time.
+       *
+       * The KYC tile carries the Aadhaar number typed above it, and the DL
+       * tile the licence number and its expiry, so the record is not just a
+       * picture with nothing to check it against.
+       */
+      const papers: Array<{
+        kind: string;
+        fileUrl?: string;
+        number?: string;
+        expiresAt?: string;
+      }> = [];
+      if (docs.dl) {
+        papers.push({
+          kind: SLOT_KIND.dl,
+          fileUrl: docs.dl.url,
+          number: packLicence(dlNumber),
+          expiresAt: validTill,
+        });
+      }
+      if (docs.kyc) {
+        papers.push({
+          kind: SLOT_KIND.kyc,
+          fileUrl: docs.kyc.url,
+          ...(aadhar.trim() ? { number: aadhar.trim() } : {}),
+        });
+      }
+      /* A PAN typed with no scan is still worth recording. */
+      if (pan.trim()) {
+        papers.push({ kind: 'PAN', number: pan.trim() });
+      }
+
+      await Promise.all(
+        papers.map(paper =>
+          driverService.saveDocument(created.id, paper).catch(() => undefined),
+        ),
+      );
+
       navigation.goBack();
     } catch (error) {
       // A number or licence already on the roster arrives here as the sentence
@@ -127,7 +296,20 @@ export const AddDriverScreen: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [dlNumber, dob, issueDate, mobile, name, navigation, validTill]);
+  }, [
+    aadhar,
+    address,
+    dlNumber,
+    docs,
+    dob,
+    issueDate,
+    mobile,
+    name,
+    navigation,
+    pan,
+    photo,
+    validTill,
+  ]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -143,14 +325,31 @@ export const AddDriverScreen: React.FC = () => {
         {/* Photo upload */}
         <View style={styles.photoCard}>
           <View>
-            <LinearGradient
-              colors={[palette.navyTint, '#c7d5e5']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.photo}
-            >
-              <Icon name="user" size={24} color={palette.slate400} />
-            </LinearGradient>
+            {photo ? (
+              /* The picture that was actually taken, not a placeholder over
+                 nothing — the office needs to see it landed. */
+              <View>
+                <Image source={{ uri: photo.preview }} style={styles.photo} />
+                {/* The picture says "chosen"; the tick says "and it is on the
+                    server". Only drawn once the upload has returned. */}
+                <View style={styles.photoTick}>
+                  <Icon name="check" size={11} color={palette.white} />
+                </View>
+              </View>
+            ) : (
+              <LinearGradient
+                colors={[palette.navyTint, '#c7d5e5']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.photo}
+              >
+                {uploading === 'photo' ? (
+                  <ActivityIndicator size="small" color={palette.navy} />
+                ) : (
+                  <Icon name="user" size={24} color={palette.slate400} />
+                )}
+              </LinearGradient>
+            )}
             <Pressable
               onPress={() => setTarget('photo')}
               accessibilityRole="button"
@@ -163,7 +362,15 @@ export const AddDriverScreen: React.FC = () => {
 
           <View style={styles.photoBody}>
             <Text style={styles.photoTitle}>Driver Photo</Text>
-            <Text style={styles.photoMeta}>JPG or PNG · Max 5 MB</Text>
+            <Text style={styles.photoMeta} numberOfLines={1}>
+              {uploading === 'photo'
+                ? 'Uploading…'
+                : photo
+                  ? ['Uploaded', readableSize(photo.size)]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : 'JPG or PNG · Max 5 MB'}
+            </Text>
             <Pressable
               onPress={() => setTarget('photo')}
               accessibilityRole="button"
@@ -174,7 +381,9 @@ export const AddDriverScreen: React.FC = () => {
               ]}
             >
               <Icon name="upload" size={12} color={palette.navy} />
-              <Text style={styles.uploadText}>UPLOAD</Text>
+              <Text style={styles.uploadText}>
+                {photo ? 'REPLACE' : 'UPLOAD'}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -348,19 +557,67 @@ export const AddDriverScreen: React.FC = () => {
           {[
             { key: 'dl', label: 'DL Photo' },
             { key: 'kyc', label: 'Aadhar + PAN' },
-          ].map(slot => (
-            <Pressable
-              key={slot.key}
-              onPress={() => setTarget(slot.key)}
-              accessibilityRole="button"
-              accessibilityLabel={`Upload ${slot.label}`}
-              style={({ pressed }) => [styles.slot, pressed && styles.pressed]}
-            >
-              <Icon name="camera" size={18} color={palette.gold} />
-              <Text style={styles.slotLabel}>{slot.label}</Text>
-            </Pressable>
-          ))}
+          ].map(slot => {
+            const attached = docs[slot.key];
+            const busy = uploading === slot.key;
+            return (
+              <Pressable
+                key={slot.key}
+                onPress={() => setTarget(slot.key)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: busy, busy }}
+                accessibilityLabel={
+                  attached
+                    ? `${slot.label} uploaded. Tap to replace.`
+                    : `Upload ${slot.label}`
+                }
+                style={({ pressed }) => [
+                  styles.slot,
+                  attached && styles.slotDone,
+                  pressed && styles.pressed,
+                ]}
+              >
+                {busy ? (
+                  <ActivityIndicator size="small" color={palette.gold} />
+                ) : attached?.type?.startsWith('image/') ? (
+                  /* Drawn from the local file so it appears instantly and
+                     cannot 401; the tick is what reports the upload. */
+                  <View style={styles.slotThumbWrap}>
+                    <Image
+                      source={{ uri: attached.preview }}
+                      style={styles.slotThumb}
+                    />
+                    <View style={styles.slotThumbTick}>
+                      <Icon name="check" size={9} color={palette.white} />
+                    </View>
+                  </View>
+                ) : (
+                  <Icon
+                    name={attached ? 'file-check' : 'camera'}
+                    size={18}
+                    color={palette.gold}
+                  />
+                )}
+                <Text style={styles.slotLabel}>{slot.label}</Text>
+                <Text style={styles.slotFile} numberOfLines={1}>
+                  {busy
+                    ? 'Uploading…'
+                    : attached
+                      ? /* Said outright, rather than left to a colour change. */
+                        ['Uploaded', readableSize(attached.size)]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : 'Tap to upload'}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
+
+        {uploadError ? (
+          <Text style={styles.uploadError}>{uploadError}</Text>
+        ) : null}
 
         {submitError ? (
           <Card padding={11} marginBottom={0} style={styles.errorCard}>
@@ -385,9 +642,11 @@ export const AddDriverScreen: React.FC = () => {
       <ImageSourceSheet
         visible={target !== null}
         onClose={closeSheet}
-        onCamera={closeSheet}
-        onGallery={closeSheet}
-        onDocument={target === 'photo' ? undefined : closeSheet}
+        onCamera={() => attach(fromCamera)}
+        onGallery={() => attach(fromGallery)}
+        // A driver's face is photographed, never attached as a PDF, so the
+        // Files option is offered for documents only.
+        onDocument={target === 'photo' ? undefined : () => attach(pickDocument)}
         title={target === 'photo' ? 'Driver Photo' : 'Upload Document'}
         subtitle="JPG · PNG · Max 5 MB"
       />
@@ -528,6 +787,56 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   slotLabel: font(10, '800', { color: palette.goldText }),
+  /* Solid once something is on file, so a filled tile reads as finished
+     rather than as one still waiting to be tapped. */
+  slotDone: {
+    borderStyle: 'solid',
+    borderColor: palette.gold,
+    backgroundColor: palette.white,
+  },
+  slotThumbWrap: { width: s(26), height: s(26) },
+  slotThumb: {
+    width: s(26),
+    height: s(26),
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.gold,
+  },
+  slotThumbTick: {
+    position: 'absolute',
+    right: s(-3),
+    bottom: s(-3),
+    width: s(13),
+    height: s(13),
+    borderRadius: radius.full,
+    backgroundColor: palette.green,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: s(1.5),
+    borderColor: palette.white,
+  },
+  photoTick: {
+    position: 'absolute',
+    right: s(-2),
+    top: s(-2),
+    width: s(18),
+    height: s(18),
+    borderRadius: radius.full,
+    backgroundColor: palette.green,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: s(2),
+    borderColor: palette.white,
+  },
+  slotFile: {
+    ...font(8, '600', { color: palette.goldText }),
+    opacity: 0.85,
+    maxWidth: '100%',
+  },
+  uploadError: {
+    ...font(9, '600', { color: palette.red }),
+    marginTop: s(6),
+  },
 
   pressed: { opacity: 0.8 },
 });

@@ -1,5 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
@@ -24,6 +31,9 @@ import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
 import type { IconName } from '@components/common/Icon';
 import { driverService, vehicleService } from '@services/fleet.service';
+import { uploadService } from '@services/upload.service';
+import { useDocumentPicker, useImagePicker } from '@hooks/useImagePicker';
+import type { PickedImage } from '@hooks/useImagePicker';
 import type { AdminDriver } from '@services/fleet.service';
 import {
   isClean,
@@ -52,15 +62,6 @@ import {
  * written those into the fleet, so the vehicles list showed "14ft" and the
  * type filter matched nothing an operator could pick.
  */
-const VEHICLE_TYPES = [
-  { label: 'Mini Truck (up to 1 Ton)', value: 'Mini Truck' },
-  { label: '14 Ft Truck (up to 7 Ton)', value: '14 Ft Truck' },
-  { label: '17 Ft Truck (up to 9 Ton)', value: '17 Ft Truck' },
-  { label: '19 Ft Truck (up to 12 Ton)', value: '19 Ft Truck' },
-  { label: '22 Ft Trailer', value: '22 Ft Trailer' },
-  { label: '32 Ft Trailer', value: '32 Ft Trailer' },
-  { label: 'Container', value: 'Container' },
-];
 
 const MAKES = [
   { label: 'Tata Motors', value: 'Tata Motors' },
@@ -88,6 +89,48 @@ type DocSlot = {
   icon: IconName;
   bg: string;
   color: string;
+};
+
+/**
+ * Which of the truck's papers each tile fills in.
+ *
+ * Creating a vehicle seeds one `VehicleDocument` per kind with nothing
+ * attached; these are the kinds, so an uploaded file can be filed against the
+ * right row once the vehicle exists.
+ */
+const SLOT_KIND: Record<string, string> = {
+  rc: 'RC',
+  insurance: 'INS',
+  fitness: 'FIT',
+  puc: 'PUC',
+};
+
+/** `904 KB`, `1.2 MB` — the caption under a filled tile. */
+const readableSize = (bytes: number): string => {
+  if (!bytes) {
+    return '';
+  }
+  return bytes < 1024 * 1024
+    ? `${Math.round(bytes / 1024)} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/**
+ * A file that is on the server, plus the local copy used to preview it.
+ *
+ * Two URLs, and the distinction matters. `url` is where the file now lives and
+ * is what gets filed against the vehicle. `preview` is the picker's own
+ * `file://` path on this handset, and it is what the tile renders — because
+ * `GET /uploads/*` sits behind the bearer guard, and an `<Image>` issues a
+ * plain GET with no Authorization header. Pointing the thumbnail at `url`
+ * gives a 401 and an empty square over a file that uploaded perfectly.
+ */
+type StoredFile = {
+  name: string;
+  size: number;
+  url: string;
+  preview: string;
+  type: string;
 };
 
 const DOC_SLOTS: DocSlot[] = [
@@ -149,6 +192,49 @@ export const AddVehicleScreen: React.FC = () => {
    */
   const [freeDrivers, setFreeDrivers] = useState<AdminDriver[]>([]);
 
+  /**
+   * The types the business actually offers, read from the API.
+   *
+   * This list used to be written into the screen — `Mini Truck`,
+   * `14 Ft Truck`, `22 Ft Trailer` — and not one of those strings appears in
+   * the `VehicleType` catalogue everything else runs on (`Tata Ace`,
+   * `Tata 407`, `14 Feet Truck`, `Trailer`). A customer books a `Tata Ace`;
+   * the office registered the lorry as a `14 Ft Truck`; nothing ever matched.
+   * Reading the catalogue is what keeps the two ends speaking the same words.
+   */
+  const [typeOptions, setTypeOptions] = useState<
+    Array<{ label: string; value: string }>
+  >([]);
+  const [typesFailed, setTypesFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    vehicleService
+      .types()
+      .then(rows => {
+        if (cancelled) {
+          return;
+        }
+        setTypeOptions(
+          rows.map(row => ({
+            label: row.capacityLabel
+              ? `${row.name} (${row.capacityLabel})`
+              : row.name,
+            // The stored value is the name, which is what a booking carries.
+            value: row.name,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTypesFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!assignNow || freeDrivers.length > 0) {
       return;
@@ -187,13 +273,19 @@ export const AddVehicleScreen: React.FC = () => {
    * file before anyone had uploaded anything — the one document you would
    * least want to be wrong about.
    */
-  const [uploads, setUploads] = useState<Record<string, string | null>>({
+  const [uploads, setUploads] = useState<Record<string, StoredFile | null>>({
     rc: null,
     insurance: null,
     fitness: null,
     puc: null,
   });
   const [target, setTarget] = useState<string | null>(null);
+  /* Which tile is mid-upload, so it can say so instead of looking idle. */
+  const [uploading, setUploading] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const { fromCamera, fromGallery } = useImagePicker();
+  const { pickDocument } = useDocumentPicker();
 
   const closeSheet = useCallback(() => setTarget(null), []);
 
@@ -234,10 +326,61 @@ export const AddVehicleScreen: React.FC = () => {
         make,
         model: model.trim(),
         year: Number(year),
+        /*
+         * The two identifiers the form has always asked for.
+         *
+         * Both fields were on the screen and neither was ever sent — there
+         * were no columns behind them either — so an operator typed a chassis
+         * number and it vanished on submit. Sent only when filled: they are
+         * optional, and an empty string would fail the DTO's length rule and
+         * reject an otherwise valid truck.
+         */
+        ...(chassis.trim() ? { chassisNumber: chassis.trim() } : {}),
+        ...(engine.trim() ? { engineNumber: engine.trim() } : {}),
         ...(assignNow && driverId ? { driverId } : {}),
       });
 
+      /*
+       * The scans, filed against the truck that now exists.
+       *
+       * Creating a vehicle seeds one document row per kind with nothing
+       * attached, and the response carries them — so each uploaded file can be
+       * matched to its row by kind and patched in. Without this the uploads
+       * were real but homeless: the bytes reached the server and no document
+       * ever pointed at them.
+       *
+       * Deliberately not fatal. The vehicle is already in the fleet by this
+       * point, and the Upload Document screen it hands off to can file
+       * anything that did not stick — failing the whole thing here would leave
+       * a truck registered and the operator believing it was not.
+       */
+      const rows = Array.isArray(created.documents)
+        ? (created.documents as Array<{ id: string; kind: string }>)
+        : [];
+      await Promise.all(
+        Object.entries(uploads).map(([slot, file]) => {
+          if (!file) {
+            return Promise.resolve();
+          }
+          const row = rows.find(d => d.kind === SLOT_KIND[slot]);
+          return row
+            ? vehicleService
+                .saveDocument(row.id, { fileUrl: file.url })
+                .catch(() => undefined)
+            : Promise.resolve();
+        }),
+      );
+
+      /*
+       * The id travels with the label.
+       *
+       * Upload Document took only `ownerLabel` — a registration string — so
+       * the screen it handed off to knew which truck it was *called* and not
+       * which row to file anything against. Anything attached there had
+       * nowhere to go.
+       */
       navigation.replace('UploadDocument', {
+        ownerId: created.id,
         ownerLabel: (created.registration as string) ?? packRegistration(registration),
       });
     } catch (error) {
@@ -256,17 +399,77 @@ export const AddVehicleScreen: React.FC = () => {
     make,
     model,
     navigation,
+    chassis,
+    engine,
     registration,
     type,
+    uploads,
     year,
   ]);
 
-  const applyUpload = useCallback(
-    (name: string) => {
-      setUploads(current =>
-        target ? { ...current, [target]: name } : current,
-      );
+  /**
+   * Attaches a real file to the slot that opened the sheet.
+   *
+   * What this replaced: the three sheet buttons called `applyUpload('photo.jpg')`,
+   * `applyUpload('scan.jpg')` and `applyUpload('document.pdf')` — literal
+   * strings. No picker ever opened, nothing was chosen, and nothing was sent.
+   * Tapping "Camera" turned the tile gold and captioned it `photo.jpg`, so a
+   * truck could be added to the fleet appearing to have its RC and insurance
+   * on file when no image existed anywhere.
+   *
+   * Now the picker actually runs, the bytes actually go to the server, and the
+   * tile is filled *only* by a URL the server gave back. A cancelled picker
+   * leaves the slot untouched; a failed upload says why and leaves it empty,
+   * which is the honest state.
+   */
+  const attach = useCallback(
+    async (pick: () => Promise<PickedImage[]>) => {
+      const slot = target;
+      // Closed first: the picker takes over the screen, and leaving the sheet
+      // underneath means it is still there when the camera returns.
       setTarget(null);
+      if (!slot) {
+        return;
+      }
+
+      const [file] = await pick();
+      if (!file) {
+        // Dismissing the picker is an ordinary outcome, not a failure.
+        return;
+      }
+
+      setUploadError(null);
+      setUploading(slot);
+      try {
+        const stored = await uploadService.upload(file);
+        setUploads(current => ({
+          ...current,
+          [slot]: {
+            // The picker's name, not the server's: `filename` comes back as a
+            // 32-character hex key, which tells an operator nothing.
+            name: file.fileName,
+            size: stored.size ?? file.fileSize,
+            url: stored.url,
+            preview: file.uri,
+            type: stored.mimetype ?? file.type,
+          },
+        }));
+      } catch (error) {
+        /*
+         * Said out loud, and the slot left empty.
+         *
+         * File storage is not configured on every deployment yet, and that
+         * answers 503 with a sentence explaining itself. Showing it beats a
+         * tile that silently stays blank after the operator watched a spinner.
+         */
+        setUploadError(
+          error instanceof Error
+            ? error.message
+            : 'That file could not be uploaded',
+        );
+      } finally {
+        setUploading(null);
+      }
     },
     [target],
   );
@@ -302,10 +505,16 @@ export const AddVehicleScreen: React.FC = () => {
           <Select
             label="Vehicle Type"
             required
-            options={VEHICLE_TYPES}
+            options={typeOptions}
             value={type}
             onChange={setType}
-            placeholder="Select vehicle type"
+            placeholder={
+              typesFailed
+                ? 'Vehicle types could not be loaded'
+                : typeOptions.length
+                  ? 'Select vehicle type'
+                  : 'Loading vehicle types…'
+            }
             marginBottom={10}
             error={errors.type}
           />
@@ -391,15 +600,20 @@ export const AddVehicleScreen: React.FC = () => {
         <View style={styles.slotGrid}>
           {DOC_SLOTS.map(slot => {
             const uploaded = uploads[slot.key];
+            const busy = uploading === slot.key;
             return (
               <Pressable
                 key={slot.key}
                 onPress={() => setTarget(slot.key)}
+                disabled={busy}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: busy, busy }}
                 accessibilityLabel={
                   uploaded
-                    ? `${slot.label}, ${uploaded} uploaded`
-                    : `Upload ${slot.label}`
+                    ? `${slot.label} uploaded. Tap to replace.`
+                    : busy
+                      ? `Uploading ${slot.label}`
+                      : `Upload ${slot.label}`
                 }
                 style={({ pressed }) => [
                   styles.slot,
@@ -407,32 +621,78 @@ export const AddVehicleScreen: React.FC = () => {
                   pressed && styles.pressed,
                 ]}
               >
-                <IconWell
-                  icon={slot.icon}
-                  size={26}
-                  iconSize={14}
-                  backgroundColor={uploaded ? palette.white : slot.bg}
-                  color={uploaded ? palette.gold : slot.color}
-                  borderRadius={radius.md}
-                />
+                {uploaded && uploaded.type?.startsWith('image/') ? (
+                  /*
+                   * The picture, with a tick over its corner.
+                   *
+                   * Drawn from the local file rather than fetched back, so it
+                   * appears the instant it is chosen and cannot fail; the tick
+                   * is what says the bytes reached the server, and it is only
+                   * drawn once they have.
+                   */
+                  <View style={styles.slotThumbWrap}>
+                    <Image
+                      source={{ uri: uploaded.preview }}
+                      style={styles.slotThumb}
+                    />
+                    <View style={styles.slotThumbTick}>
+                      <Icon name="check" size={9} color={palette.white} />
+                    </View>
+                  </View>
+                ) : (
+                  <IconWell
+                    icon={uploaded ? 'file-check' : slot.icon}
+                    size={26}
+                    iconSize={14}
+                    backgroundColor={uploaded ? palette.white : slot.bg}
+                    color={uploaded ? palette.gold : slot.color}
+                    borderRadius={radius.md}
+                  />
+                )}
                 <Text style={uploaded ? styles.slotLabelDone : styles.slotLabel}>
                   {slot.label}
                 </Text>
-                <Text style={uploaded ? styles.slotFile : styles.slotHint}>
-                  {uploaded ?? 'Tap to upload'}
+                <Text
+                  style={uploaded ? styles.slotFile : styles.slotHint}
+                  numberOfLines={1}
+                >
+                  {busy
+                    ? 'Uploading…'
+                    : uploaded
+                      ? /*
+                         * Said outright.
+                         *
+                         * The caption was the stored filename, which answers
+                         * "what is it called" — a question nobody asked — and
+                         * left "did it actually go?" to be inferred from a
+                         * colour change. An operator who is not sure re-taps
+                         * and uploads it twice.
+                         */
+                        ['Uploaded', readableSize(uploaded.size)]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : 'Tap to upload'}
                 </Text>
 
                 <View style={styles.slotBadge}>
-                  <Icon
-                    name={uploaded ? 'check' : 'upload-cloud'}
-                    size={12}
-                    color={uploaded ? palette.gold : palette.slate400}
-                  />
+                  {busy ? (
+                    <ActivityIndicator size="small" color={palette.gold} />
+                  ) : (
+                    <Icon
+                      name={uploaded ? 'check' : 'upload-cloud'}
+                      size={12}
+                      color={uploaded ? palette.gold : palette.slate400}
+                    />
+                  )}
                 </View>
               </Pressable>
             );
           })}
         </View>
+
+        {uploadError ? (
+          <Text style={styles.uploadError}>{uploadError}</Text>
+        ) : null}
 
         {/* Assign driver toggle */}
         <Card padding={11} marginBottom={0} style={styles.assignRow}>
@@ -499,9 +759,9 @@ export const AddVehicleScreen: React.FC = () => {
       <ImageSourceSheet
         visible={target !== null}
         onClose={closeSheet}
-        onCamera={() => applyUpload('photo.jpg')}
-        onGallery={() => applyUpload('scan.jpg')}
-        onDocument={() => applyUpload('document.pdf')}
+        onCamera={() => attach(fromCamera)}
+        onGallery={() => attach(fromGallery)}
+        onDocument={() => attach(pickDocument)}
         title="Upload Document"
         subtitle="JPG · PNG · PDF · Max 10 MB"
       />
@@ -549,6 +809,33 @@ const styles = StyleSheet.create({
 
   assignRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
   assignPicker: { marginTop: s(8) },
+  slotThumbWrap: { width: s(26), height: s(26) },
+  slotThumb: {
+    width: s(26),
+    height: s(26),
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.gold,
+  },
+  /* Sits on the corner of the picture: the picture says "chosen", this says
+     "and it is on the server". */
+  slotThumbTick: {
+    position: 'absolute',
+    right: s(-3),
+    bottom: s(-3),
+    width: s(13),
+    height: s(13),
+    borderRadius: radius.full,
+    backgroundColor: palette.green,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: s(1.5),
+    borderColor: palette.white,
+  },
+  uploadError: {
+    ...font(9, '600', { color: palette.red }),
+    marginTop: s(6),
+  },
   errorCard: {
     marginTop: s(10),
     flexDirection: 'row',

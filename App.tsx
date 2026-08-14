@@ -12,6 +12,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { NotificationBanner } from '@components/common/NotificationBanner';
+import { openNotificationLink } from '@navigation/navigationRef';
 import { Provider as ReduxProvider } from 'react-redux';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -42,7 +43,9 @@ const App = () => (
               bottom sheet. Inside it, the banner would be clipped by the
               current screen and would unmount on every navigation.
             */}
-            <NotificationBanner />
+            <NotificationBanner
+              onPress={notification => openNotificationLink(notification.link)}
+            />
           </ThemeProvider>
         </SafeAreaProvider>
       </QueryClientProvider>

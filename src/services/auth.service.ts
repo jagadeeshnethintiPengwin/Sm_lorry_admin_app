@@ -1,6 +1,9 @@
+import { getMessaging, getToken } from '@react-native-firebase/messaging';
+
 import { apiClient, setAuthToken } from './api.client';
 import { connectRealtime, disconnectRealtime } from './realtime';
 import { registerForPush } from './push';
+import { session } from './storage';
 import type { OwnerProfile } from '@apptypes/index';
 
 export type SendOtpResponse = {
@@ -169,11 +172,49 @@ export const authService = {
     return data;
   },
 
-  /** POST /auth/logout */
+  /**
+   * POST /auth/logout — this device, and only this device.
+   *
+   * Both values in the body matter, and both were missing.
+   *
+   * Without `refreshToken` the server reads the request as "end every session
+   * for this account" — that is what the endpoint documents an omitted token
+   * to mean — so signing out of the phone also signed the owner out of the web
+   * panel they had open on a desk. Naming the session ends that one.
+   *
+   * Without `pushToken` the registration stayed on the account, because it is
+   * not part of a session and nothing else clears it. The handset carried on
+   * receiving push for an account that had signed out of it — the wrong
+   * person's bookings arriving on a phone that had been handed back.
+   *
+   * The local session is cleared whatever the request did: a server that
+   * cannot be reached must not be able to keep somebody signed in on a device
+   * they are trying to hand over.
+   */
   async logout(): Promise<void> {
-    await apiClient.post('/auth/logout').catch(() => {
-      // A failed logout must still clear the local session.
-    });
+    const refreshToken = session.getRefreshToken() ?? undefined;
+
+    /*
+     * Asked of Firebase rather than remembered.
+     *
+     * `registerForPush` reports the token and keeps no copy, and it can be
+     * reissued at any point in between — the one the server holds is whatever
+     * was reported last, so that is what has to be named here. A device that
+     * never registered, or one where Firebase is unavailable, simply sends
+     * nothing and the account's other handset keeps its registration.
+     */
+    let pushToken: string | undefined;
+    try {
+      pushToken = (await getToken(getMessaging())) || undefined;
+    } catch {
+      // No registration to retire — nothing to say.
+    }
+
+    await apiClient
+      .post('/auth/logout', { refreshToken, pushToken })
+      .catch(() => {
+        // A failed logout must still clear the local session.
+      });
     await setAuthToken(null);
     /* The socket is authenticated by the token that just went; drop it too. */
     disconnectRealtime();

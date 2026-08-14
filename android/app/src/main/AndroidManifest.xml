@@ -11,6 +11,17 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
+      Photographing a document.
+
+      The office captures an RC or an insurance certificate straight from the
+      Add Vehicle and Add Driver screens. `required="false"` because a tablet
+      without a camera should still install and use the gallery instead of
+      being filtered out of the Play Store listing.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!--
       What this app needs to see of the rest of the phone.
 
       Since Android 11 an app is shown only the other apps it declares an
@@ -31,6 +42,10 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="http" />
+        </intent>
+        <!-- Handing off to a camera app to photograph a document. -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
         <!-- Calling the office or a customer from a trip. -->
         <intent>

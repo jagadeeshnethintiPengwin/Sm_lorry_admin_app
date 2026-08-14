@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import {
   NavigationContainer,
   DefaultTheme,
@@ -29,12 +29,39 @@ import { BusinessDetailsScreen } from '@screens/BusinessDetailsScreen';
 import { LogoutConfirmScreen } from '@screens/LogoutConfirmScreen';
 import { useTheme } from '@theme/ThemeProvider';
 import { palette } from '@theme/colors';
+import { watchNotificationTaps } from '@services/push';
+import { navigationRef, openNotificationLink } from './navigationRef';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export const RootNavigator: React.FC = () => {
   const { colors, isDark } = useTheme();
+
+  /*
+   * Tapping a notification opens what it is about.
+   *
+   * `watchNotificationTaps` was written and then never called, so every
+   * notification — a new booking, a breakdown reported, a delivery — opened
+   * the app on whatever screen it was last left on. The operator was told
+   * something had happened and then had to go and find it, which is most of
+   * the value of a notification gone.
+   *
+   * Two cases, both handled inside the watcher: the app backgrounded and
+   * brought forward, and the app closed with the tap being what launched it.
+   * A cold start races the navigator being ready, so the link is retried once
+   * rather than dropped — `openNotificationLink` answers false instead of
+   * throwing when the ref is not mounted yet.
+   */
+  useEffect(
+    () =>
+      watchNotificationTaps(link => {
+        if (!openNotificationLink(link)) {
+          setTimeout(() => openNotificationLink(link), 600);
+        }
+      }),
+    [],
+  );
 
   const navTheme = useMemo<Theme>(
     () => ({
@@ -54,7 +81,7 @@ export const RootNavigator: React.FC = () => {
   );
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer ref={navigationRef} theme={navTheme}>
       <Stack.Navigator
         initialRouteName="Auth"
         screenOptions={{ headerShown: false, animation: 'slide_from_right' }}

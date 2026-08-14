@@ -5,11 +5,11 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
+  PulseGlow,
   BlinkDot,
   Card,
   Content,
   Icon,
-  PulseGlow,
   RadialGlow,
   Screen,
   TwinkleDot,
@@ -451,8 +451,15 @@ export const DashboardScreen: React.FC = () => {
             end={{ x: 1, y: 1 }}
             style={styles.cta}
           >
-            <View style={styles.ctaBloom} />
+            {/*
+              The bloom is gone.
 
+              It was a 90px translucent disc bleeding out of the top-right
+              corner, which put a pale ring directly behind the chevron — the
+              arrow looked like it had been given a circle nobody asked for.
+              The card carries its depth from the gradient and the hairline
+              below instead.
+            */}
             <View style={styles.ctaRow}>
               <View style={styles.ctaIconWrap}>
                 <PulseGlow color={palette.navy} opacity={0.15} duration={1800} />
@@ -462,15 +469,29 @@ export const DashboardScreen: React.FC = () => {
               </View>
 
               <View style={styles.ctaBody}>
-                <Text style={styles.ctaTitle}>
-                  {summary?.pendingBookings ?? 0} bookings awaiting approval
-                </Text>
+                {/*
+                  The count leads.
+
+                  It was set in the same 12px weight as the words around it, so
+                  the one number the operator is looking for had to be read out
+                  of a sentence. Sized up and given the line to itself, the card
+                  answers "how many" before it is read.
+                */}
+                <View style={styles.ctaHeadline}>
+                  <Text style={styles.ctaCount}>
+                    {summary?.pendingBookings ?? 0}
+                  </Text>
+                  <Text style={styles.ctaTitle}>bookings awaiting approval</Text>
+                </View>
                 <Text style={styles.ctaMeta}>
                   Tap to review &amp; dispatch drivers
                 </Text>
               </View>
 
-              <Icon name="chevron-right" size={20} color={palette.navy} />
+              {/* Wrapped: `Icon` takes no style prop of its own. */}
+              <View style={styles.ctaChevron}>
+                <Icon name="chevron-right" size={20} color={palette.navy} />
+              </View>
             </View>
           </LinearGradient>
         </Pressable>
@@ -800,27 +821,35 @@ const styles = StyleSheet.create({
 
   cta: {
     borderRadius: radius.xl,
-    padding: s(12),
+    padding: s(13),
     marginBottom: s(12),
     overflow: 'hidden',
+    /*
+     * A lit top edge.
+     *
+     * With the bloom removed the gradient had nothing to catch, and a flat
+     * gold rectangle reads as cheap. A hairline of white along the border
+     * behaves like light landing on the top of the card — the same trick the
+     * vehicle cards use — and costs one line rather than another absolutely
+     * positioned shape.
+     */
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: alpha.white30,
     ...shadows.vehicleSelected,
-  },
-  ctaBloom: {
-    position: 'absolute',
-    right: s(-15),
-    top: s(-15),
-    width: s(90),
-    height: s(90),
-    borderRadius: radius.full,
-    backgroundColor: alpha.white15,
   },
   ctaRow: {
     position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: s(10),
+    gap: s(11),
   },
-  ctaIconWrap: { width: s(40), height: s(40) },
+  ctaIconWrap: {
+    width: s(40),
+    height: s(40),
+    // Defaults to 0 in React Native, so a long headline would squash the disc
+    // into an oval rather than wrapping.
+    flexShrink: 0,
+  },
   ctaIcon: {
     position: 'absolute',
     top: s(5),
@@ -832,13 +861,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  ctaBody: { flex: 1 },
-  ctaTitle: font(12, '800', { color: palette.navy }),
+  ctaBody: { flex: 1, minWidth: 0 },
+  /* The count and its label share a baseline rather than stacking. */
+  ctaHeadline: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: s(5),
+  },
+  ctaCount: font(19, '800', { color: palette.navy, letterSpacing: -0.3 }),
+  ctaTitle: {
+    ...font(11, '800', { color: palette.navy }),
+    flexShrink: 1,
+  },
   ctaMeta: {
     ...font(9, '700', { color: palette.navy }),
-    opacity: 0.85,
-    marginTop: s(1),
+    opacity: 0.75,
+    marginTop: s(2),
   },
+  /* Present, not shouting — the whole card is the target. */
+  ctaChevron: { opacity: 0.55, flexShrink: 0 },
 
   grid: {
     flexDirection: 'row',

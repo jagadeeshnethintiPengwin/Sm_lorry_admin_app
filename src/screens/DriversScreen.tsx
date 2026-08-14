@@ -402,7 +402,17 @@ export const DriversScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   searchWrap: {
-    paddingVertical: s(10),
+    /*
+     * Asymmetric on purpose.
+     *
+     * The gap under the search box was the sum of two values written in
+     * different places — this block's 10 underneath and the tab row's 12 above
+     * — so the strip read as 22 of empty white between two controls that
+     * belong together. The top keeps its 10 against the header; the bottom is
+     * tightened, and the tab row's margin comes down to match.
+     */
+    paddingTop: s(10),
+    paddingBottom: s(7),
     paddingHorizontal: s(12),
     backgroundColor: palette.white,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -428,7 +438,9 @@ const styles = StyleSheet.create({
   tabs: {
     flexDirection: 'row',
     backgroundColor: palette.navyTint,
-    marginTop: s(12),
+    // Paired with `searchWrap.paddingBottom` above — the two together are the
+    // gap the eye actually sees.
+    marginTop: s(7),
     marginHorizontal: s(12),
     borderRadius: radius.lg,
     padding: s(3),
