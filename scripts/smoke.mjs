@@ -80,6 +80,35 @@ function describe(response) {
   }`;
 }
 
+/**
+ * Asks for a code, waiting out the per-number resend cooldown.
+ *
+ * The API refuses a second code for the same number inside
+ * `OTP_RESEND_SECONDS` — a real control, since `otp/send` is unauthenticated and
+ * a caller who can mint challenges freely has both an SMS bill and unlimited
+ * guesses at six digits. This script asks three times in a row (send, resend,
+ * then a clean send to verify with), so without waiting the second and third
+ * both came back 429 and the suite reported broken authentication.
+ *
+ * Waiting rather than turning the limit off outside production: a control that
+ * is disabled wherever it is inconvenient is one nobody notices has broken. The
+ * refusal names the seconds remaining, so there is nothing to guess.
+ */
+async function callOtp(path, body) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const sent = await call('POST', path, body);
+    if (sent.status !== 429) {
+      return sent;
+    }
+    const seconds = Number(
+      /(\d+)\s*second/.exec(String(sent.body?.message ?? ''))?.[1] ?? 25,
+    );
+    console.log(`  ...  waiting ${seconds}s for ${JSON.stringify(body.mobile)}'s resend cooldown`);
+    await new Promise(resolve => setTimeout(resolve, (seconds + 1) * 1000));
+  }
+  return call('POST', path, body);
+}
+
 async function probe(bucket, { screen, call: request, expects }) {
   const response = await request();
   let complaint = describe(response);
@@ -126,7 +155,7 @@ console.log('WIRED — what the app calls today');
 
 const sent = await probe(wired, {
   screen: 'POST /auth/otp/send → verificationId',
-  call: () => call('POST', '/auth/otp/send', { mobile: OWNER_MOBILE }),
+  call: () => callOtp('/auth/otp/send', { mobile: OWNER_MOBILE }),
   expects: body => missing(body, ['verificationId', 'resendIn']),
 });
 

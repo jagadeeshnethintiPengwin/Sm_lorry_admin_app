@@ -1,5 +1,8 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
-import { API_ORIGIN as CONFIGURED_ORIGIN } from '@env';
+import {
+  API_ORIGIN as CONFIGURED_ORIGIN,
+  USE_LOCAL_API as CONFIGURED_USE_LOCAL,
+} from '@env';
 import { session } from './storage';
 import { apiLog } from './api.log';
 
@@ -11,22 +14,80 @@ import { apiLog } from './api.log';
  * The SMT backend. All four apps talk to the same NestJS service; each gets
  * its own role-scoped surface.
  *
- * In development the address comes from `.env`, because it depends on where
- * the API is running and who is looking at it:
+ * `API_ORIGIN` as a usable origin, or a failure that says what is wrong.
  *
- *   - a simulator or an emulator with `adb reverse tcp:4000 tcp:4000`
- *     can use `http://localhost:4000`;
- *   - a real handset cannot — `localhost` is the phone itself — and needs the
- *     LAN address of the machine serving the API, which changes with the
- *     network it joins.
+ * Two typos in this value used to surface identically, as "could not reach the
+ * server" at the first request — which reads as the API being down when in fact
+ * the address never could have resolved:
  *
- * `npm run point-apps` in the repo root writes that address into every app.
- * The fallback below only applies to a checkout with no `.env` yet.
+ *   192.168.1.5.4000   a dot where the port's colon belongs
+ *   http://host:4000/  a trailing slash, giving `…:4000//admin/v1`
+ *
+ * The slash is repaired silently because there is one obvious intent. A host
+ * that cannot be what it appears to be is not repaired, because guessing which
+ * dot was meant to be a colon is how you point a build somewhere unintended;
+ * it throws instead, on a debug build, where the person who can fix the `.env`
+ * is the person looking at the screen.
  */
-const LOCAL_API = CONFIGURED_ORIGIN ?? 'http://localhost:4000';
+function toOrigin(configured: string | undefined): string {
+  const fallback = 'http://localhost:4000';
+  const written = configured?.trim();
+  if (!written) {
+    return fallback;
+  }
+
+  const origin = written.replace(/\/+$/, '');
+  if (!/^https?:\/\//.test(origin)) {
+    if (__DEV__) {
+      throw new Error(
+        `API_ORIGIN is "${written}", which has no http:// or https:// — add one in ` +
+          'SmLorryAdmin/.env, or run: npm run point-apps',
+      );
+    }
+    return fallback;
+  }
+
+  /*
+   * Only numeric hosts are checked, and only against the one thing they can be.
+   * A name is left alone: this cannot know which hostnames exist, and DNS will
+   * say so in a way that is already clear.
+   */
+  const host = origin.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+  const numeric = /^[\d.]+$/.test(host);
+  const octets = host.split('.');
+  const isIpv4 =
+    octets.length === 4 &&
+    octets.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+
+  if (numeric && !isIpv4 && __DEV__) {
+    throw new Error(
+      `API_ORIGIN is "${written}", and "${host}" cannot be an address — a port ` +
+        'is separated by a colon, not a dot (192.168.1.5:4000). Fix it in ' +
+        'SmLorryAdmin/.env, or run: npm run point-apps',
+    );
+  }
+
+  return origin;
+}
 
 /**
- * The deployed API, used by every build that is not a debug build.
+ * Whether this build has been deliberately pointed at a local API.
+ *
+ * `API_ORIGIN` used to be enough on its own, and that is what made the address
+ * hard to trust. It is inlined by Babel at transform time, and Metro computes
+ * the cache key that covers `.env` when it *starts* — so editing `.env` under a
+ * bundler that is already running changes nothing, and the app keeps talking to
+ * an address that is no longer written down anywhere. The same file left over
+ * from last week's network had the same effect, silently.
+ *
+ * Requiring a second, explicit flag makes going local something a developer says
+ * rather than something a stale file decides. `npm run point-apps` writes both,
+ * so the workflow is unchanged.
+ */
+const WANTS_LOCAL_API = CONFIGURED_USE_LOCAL?.trim() === 'true';
+
+/**
+ * The deployed API — the default for every build, debug ones included.
  *
  * Hardcoded rather than read from `.env`: a release must not depend on a file
  * that is git-ignored and absent on a build machine, and an app that silently
@@ -41,10 +102,42 @@ const PRODUCTION_API = 'https://api.simhadritransport.com';
  *
  * Exported because the realtime socket connects to the origin, not to
  * `/admin/v1` — the gateway lives at `/realtime` alongside the REST surfaces.
+ *
+ * The deployment is what you get unless you ask for something else, and asking
+ * takes both `USE_LOCAL_API=true` and an `API_ORIGIN`. It used to be the other
+ * way round — a debug build took whatever `.env` said — which meant the normal
+ * case depended on a git-ignored file being right, and the failure was an app
+ * pointed at an address that had not existed since the laptop last changed
+ * Wi-Fi. A release build ignores both, as it always has.
  */
-export const API_ORIGIN = __DEV__ ? LOCAL_API : PRODUCTION_API;
+export const API_ORIGIN =
+  __DEV__ && WANTS_LOCAL_API ? toOrigin(CONFIGURED_ORIGIN) : PRODUCTION_API;
 
 export const API_BASE_URL = `${API_ORIGIN}/admin/v1`;
+
+/*
+ * Said once, at startup, because "which API am I actually talking to" was a
+ * question the app never answered and every other answer here depends on.
+ */
+if (__DEV__) {
+  console.log(
+    `[api] ${API_BASE_URL}${WANTS_LOCAL_API ? ' (local, from .env)' : ' (deployed)'}`,
+  );
+}
+
+/**
+ * Whether the API is a machine on this network rather than a deployed one.
+ *
+ * Only used to decide what to suggest when nothing answers. "Check the phone is
+ * on the same network" is the right advice for a laptop on Wi-Fi and actively
+ * misleading for `https://api.simhadritransport.com`, where the LAN has nothing
+ * to do with it — that reading sends somebody to their router while the real
+ * cause is the handset's own connection.
+ */
+const IS_LOCAL_API =
+  /^https?:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
+    API_ORIGIN,
+  );
 
 const DEFAULT_TIMEOUT = 20_000;
 
@@ -244,7 +337,30 @@ apiClient.interceptors.response.use(
     if (error.code === 'ECONNABORTED') {
       return Promise.reject(new ApiError('Request timed out', 408));
     }
-    return Promise.reject(new ApiError(error.message || 'Network error', 0));
+    /*
+     * Nothing answered. "Network error" is true and useless — the usual cause in
+     * development is the app pointing where the API is not, and the address is
+     * the one thing worth saying. What to check depends on where it points, so
+     * the two cases are said separately rather than one message hedging across
+     * both. Named only on a debug build; a signed-in operator has no use for it.
+     */
+    return Promise.reject(
+      new ApiError(
+        __DEV__
+          ? IS_LOCAL_API
+            ? `Could not reach the API at ${API_BASE_URL}.\n\n` +
+              'It is a local address, so check that the API is running, that it ' +
+              "is this machine's current LAN address (npm run where — it changes " +
+              'with the network), and that the phone is on the same Wi-Fi.\n\n' +
+              'To use the deployed API instead:\n' +
+              '  npm run point-apps https://api.simhadritransport.com'
+            : `Could not reach the API at ${API_BASE_URL}.\n\n` +
+              'It is a deployed address, so the LAN is not involved — check the ' +
+              "handset's own internet connection and that the host is up."
+          : 'No connection. Check your network and try again.',
+        0,
+      ),
+    );
   },
 );
 
