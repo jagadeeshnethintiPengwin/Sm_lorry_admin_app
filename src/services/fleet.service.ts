@@ -108,12 +108,43 @@ export type AdminDocument = Record<string, unknown> & {
   kind?: string;
 };
 
+/** What New Trip sends to raise a booking on a customer's behalf. */
+export type NewBooking = {
+  customerId: string;
+  pickupPlace: string;
+  dropPlace: string;
+  vehicleType: string;
+  material: string;
+  weightTons: number;
+  pickupAt: string;
+};
+
+/**
+ * What Add Customer (and the New Trip walk-in "Other") sends. Email and state
+ * are optional — a walk-in is identified by a name and a phone number.
+ */
+export type NewCustomer = {
+  company: string;
+  contactName: string;
+  mobile: string;
+  email?: string;
+  state?: string;
+  gstin?: string;
+  addressLine?: string;
+  city?: string;
+};
+
 // --------------------------------------------------------------- services
 
 export const bookingService = {
   list: (params?: Record<string, unknown>) =>
     listOf<AdminBooking>('/bookings', params),
   get: (id: string) => oneOf<AdminBooking>(`/bookings/${id}`),
+  /** Raise a booking on a customer's behalf — the first half of New Trip. */
+  create: async (body: NewBooking): Promise<AdminBooking> => {
+    const { data } = await apiClient.post<AdminBooking>('/bookings', body);
+    return data;
+  },
   approve: async (id: string, body?: Record<string, unknown>) => {
     const { data } = await apiClient.post(`/bookings/${id}/approve`, body ?? {});
     return data;
@@ -187,7 +218,16 @@ export const driverService = {
 export const vehicleService = {
   page: (params?: Record<string, unknown>) => pageOf<AdminVehicle>('/vehicles', params),
   list: (params?: Record<string, unknown>) => listOf<AdminVehicle>('/vehicles', params),
-  available: () => listOf<AdminVehicle>('/vehicles/available'),
+  /**
+   * Free vehicles, optionally only of the type the booking asked for.
+   *
+   * The server does the matching (a booking's "Mini Truck" against the fleet's
+   * registered types, tolerant of the Feet/Ft spelling gap), so a booking for a
+   * Mini Truck never offers a Bolero. Called with no type, it returns the whole
+   * free fleet.
+   */
+  available: (type?: string) =>
+    listOf<AdminVehicle>('/vehicles/available', type ? { type } : undefined),
 
   /**
    * The vehicle types the business actually offers.
@@ -256,6 +296,11 @@ export const customerService = {
   page: (params?: Record<string, unknown>) => pageOf<AdminCustomer>('/customers', params),
   list: (params?: Record<string, unknown>) => listOf<AdminCustomer>('/customers', params),
   get: (id: string) => oneOf<AdminCustomer>(`/customers/${id}`),
+  /** Add a customer to the roster — used by Add Customer and the walk-in flow. */
+  create: async (body: NewCustomer): Promise<AdminCustomer> => {
+    const { data } = await apiClient.post<AdminCustomer>('/customers', body);
+    return data;
+  },
 };
 
 export const tripService = {
@@ -273,7 +318,118 @@ export const tripService = {
    * notice: a screen asking where the lorry is was told nothing, silently.
    */
   tracking: (id: string) => oneOf<TripTracking>(`/trips/${id}/tracking`),
+  /**
+   * Move a live trip to another driver, another vehicle, or both.
+   *
+   * The office's escape hatch for a breakdown or a driver who cannot continue.
+   * The endpoint always needs a `driverId`, so a vehicle-only swap sends the
+   * trip's current driver unchanged; it refuses a driver or lorry already on
+   * another live trip, and frees whatever is replaced.
+   */
+  reassign: async (
+    id: string,
+    body: { driverId: string; vehicleId?: string },
+  ) => {
+    const { data } = await apiClient.post(`/trips/${id}/reassign`, body);
+    return data;
+  },
+
+  /** Start a scheduled trip — moves it to IN_TRANSIT and marks it on the road. */
+  start: async (id: string) => {
+    const { data } = await apiClient.post(`/trips/${id}/start`, {});
+    return data;
+  },
+
+  /**
+   * Close an in-transit trip from the office — marks it DELIVERED, frees the
+   * vehicle and driver, and completes the booking. Needs who received the load.
+   */
+  complete: async (
+    id: string,
+    body: { receiverName: string; receiverPhone?: string; remarks?: string },
+  ) => {
+    const { data } = await apiClient.post(`/trips/${id}/complete`, body);
+    return data;
+  },
+
+  /** Cancel a live trip with a reason — frees the vehicle and driver. */
+  cancel: async (id: string, reason: string) => {
+    const { data } = await apiClient.post(`/trips/${id}/cancel`, { reason });
+    return data;
+  },
+
+  /** A trip's money — revenue, payments received and running costs, in one read. */
+  finance: (id: string) => oneOf<TripFinance>(`/trips/${id}/finance`),
+
+  /** Record a payment received against a trip; returns the updated finance. */
+  addPayment: async (id: string, body: TripPaymentInput): Promise<TripFinance> => {
+    const { data } = await apiClient.post<TripFinance>(
+      `/trips/${id}/payments`,
+      body,
+    );
+    return data;
+  },
+
+  /** Book a running cost (fuel, oil, toll…) against a trip. */
+  addExpense: async (id: string, body: TripExpenseInput): Promise<TripFinance> => {
+    const { data } = await apiClient.post<TripFinance>(
+      `/trips/${id}/expenses`,
+      body,
+    );
+    return data;
+  },
 };
+
+export interface TripPaymentInput {
+  mode: string;
+  amount: number;
+  paidAt: string;
+  reference?: string;
+  note?: string;
+}
+export interface TripExpenseInput {
+  category: string;
+  amount: number;
+  spentAt: string;
+  note?: string;
+}
+export interface TripPaymentRow {
+  id: string;
+  mode: string;
+  amount: string;
+  reference: string | null;
+  note: string | null;
+  paidAt: string;
+}
+export interface TripExpenseRow {
+  id: string;
+  category: string;
+  amount: string;
+  note: string | null;
+  spentAt: string;
+}
+/** What `/trips/:id/finance` answers. */
+export interface TripFinance {
+  revenue: number;
+  gst: number;
+  received: number;
+  balance: number;
+  expenses: number;
+  net: number;
+  paymentMethod: string | null;
+  payments: {
+    items: TripPaymentRow[];
+    total: number;
+    count: number;
+    byMode: Record<string, number>;
+  };
+  costs: {
+    items: TripExpenseRow[];
+    total: number;
+    count: number;
+    byCategory: Record<string, number>;
+  };
+}
 
 /** What `/trips/:id/tracking` answers — the live board for one trip. */
 export interface TripTracking {

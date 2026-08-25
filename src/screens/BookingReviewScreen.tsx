@@ -128,17 +128,6 @@ export const BookingReviewScreen: React.FC = () => {
   const closeDialog = useCallback(() => setDialog(null), []);
 
   /*
-   * Only what can actually take the job.
-   *
-   * `/vehicles/available` and `/drivers/available` exclude anything in
-   * maintenance or off duty, and — since the double-booking fix — anything
-   * already carrying a load. Those are the same refusals `approve` makes, so
-   * every option shown here can actually be chosen.
-   */
-  const fleet = useApi(() => vehicleService.available(), []);
-  const roster = useApi(() => driverService.available(), []);
-
-  /*
    * The booking being reviewed.
    *
    * The screen took a `bookingId` and never fetched it — the documents pair
@@ -146,6 +135,32 @@ export const BookingReviewScreen: React.FC = () => {
    * on every booking whether or not either had ever been attached.
    */
   const booking = useApi(() => bookingService.get(bookingId), [bookingId]);
+
+  // The vehicle type the customer booked. The assign list is narrowed to it so
+  // a Mini Truck booking cannot be given a Bolero or a 22 ft trailer; "Show all
+  // types" lifts the filter for the case where nothing of that type is free.
+  const requestedType = String(booking.data?.vehicleType ?? '').trim();
+  const [showAllTypes, setShowAllTypes] = useState(false);
+
+  /*
+   * Only what can actually take the job — and, by default, only of the booked
+   * type.
+   *
+   * `/vehicles/available` and `/drivers/available` exclude anything in
+   * maintenance or off duty, and — since the double-booking fix — anything
+   * already carrying a load. Those are the same refusals `approve` makes, so
+   * every option shown here can actually be chosen. Passing the booking's type
+   * narrows the vehicles to that size server-side, matched tolerantly across
+   * the "Feet"/"Ft" spellings.
+   */
+  const fleet = useApi(
+    () =>
+      vehicleService.available(
+        showAllTypes ? undefined : requestedType || undefined,
+      ),
+    [requestedType, showAllTypes],
+  );
+  const roster = useApi(() => driverService.available(), []);
 
   /**
    * The paperwork actually filed against this shipment.
@@ -640,10 +655,36 @@ export const BookingReviewScreen: React.FC = () => {
                 ? 'Loading vehicles…'
                 : vehicleOptions.length
                   ? 'Select a vehicle'
-                  : 'No vehicle is free right now'
+                  : !showAllTypes && requestedType
+                    ? `No ${requestedType} free`
+                    : 'No vehicle is free right now'
             }
-            marginBottom={10}
+            marginBottom={requestedType ? 6 : 10}
           />
+
+          {requestedType ? (
+            <Pressable
+              onPress={() => {
+                // Widening (or re-narrowing) can drop the chosen lorry from the
+                // list, so clear the selection when the filter flips.
+                setShowAllTypes(v => !v);
+                setVehicle('');
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={
+                showAllTypes
+                  ? `Show only ${requestedType}`
+                  : 'Show all vehicle types'
+              }
+              style={styles.typeToggle}
+            >
+              <Text style={styles.typeToggleText}>
+                {showAllTypes
+                  ? `Showing all types · only ${requestedType}`
+                  : `Showing ${requestedType} only · show all types`}
+              </Text>
+            </Pressable>
+          ) : null}
 
           {chosenVehicle ? (
             <View style={styles.matchGold}>
@@ -823,6 +864,8 @@ const styles = StyleSheet.create({
     marginBottom: s(8),
   },
   sectionGap: { marginTop: s(14) },
+  typeToggle: { alignSelf: 'flex-start', paddingVertical: s(4), marginBottom: s(6) },
+  typeToggleText: font(9, '800', { color: palette.red }),
 
   customerCard: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
   customerTile: {

@@ -174,6 +174,9 @@ export const TripsScreen: React.FC = () => {
         subtitle={`${inTransit} in transit · ${total} total`}
         showBack
         onBackPress={navigation.goBack}
+        rightIcon="plus"
+        onRightPress={() => navigation.navigate('NewTrip')}
+        rightAccessibilityLabel="New trip"
       />
 
       <View style={styles.searchWrap}>

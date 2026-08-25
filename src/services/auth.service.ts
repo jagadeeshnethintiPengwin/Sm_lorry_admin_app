@@ -108,6 +108,25 @@ export const authService = {
     return data;
   },
 
+  /**
+   * POST /auth/login — email + password sign-in.
+   *
+   * The same endpoint the web panel uses, and it hands back the same token pair
+   * as the OTP flow, so everything downstream (the socket, push, the refresh
+   * token) is set up identically. No PIN, no code — one form, one request.
+   */
+  async login(email: string, password: string): Promise<VerifyOtpResponse> {
+    const { data } = await apiClient.post<VerifyOtpResponse>(
+      '/auth/login',
+      { email, password },
+      { headers: { 'X-Anonymous': 'true' } },
+    );
+    await setAuthToken(data.token, data.refreshToken);
+    connectRealtime();
+    registerForPush().catch(() => undefined);
+    return data;
+  },
+
   /** POST /auth/otp/send */
   async sendOtp(mobile: string): Promise<SendOtpResponse> {
     const { data } = await apiClient.post<SendOtpResponse>(

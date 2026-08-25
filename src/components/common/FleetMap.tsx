@@ -106,102 +106,6 @@ const MARKER_HEIGHT = HALO + PLATE_GAP + PLATE_HEIGHT;
  */
 const PUCK_CENTRE_Y = HALO / 2 / MARKER_HEIGHT;
 
-/** Muted styling so the map sits behind the brand UI instead of fighting it. */
-/**
- * A quiet base map, so the lorries are the only thing on it that shouts.
- *
- * The default Google style is built for a person finding a restaurant: shops,
- * parks, bus routes and full-strength road colours, all competing with a
- * marker for the same attention. On a fleet board none of that is being looked
- * for — the question is only ever "where are my trucks, and which way are they
- * going".
- *
- * So the ground is desaturated to near-paper, the road network is kept but
- * pushed back to a hierarchy of greys with the arterials a shade darker, and
- * everything that is neither road, water nor place name is turned off. The
- * gold and red pucks then sit on a background that has nothing else in those
- * hues, which is what makes them legible at a glance rather than merely
- * present.
- */
-const MAP_STYLE = [
-  /* Clutter: shops, parks, bus stops, business labels. */
-  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-  {
-    featureType: 'administrative.land_parcel',
-    stylers: [{ visibility: 'off' }],
-  },
-  { featureType: 'administrative.neighborhood', stylers: [{ visibility: 'off' }] },
-
-  /* Ground and water: two flat, cool neutrals. */
-  {
-    featureType: 'landscape',
-    elementType: 'geometry',
-    stylers: [{ color: '#f4f6fa' }],
-  },
-  {
-    featureType: 'water',
-    elementType: 'geometry',
-    stylers: [{ color: '#dde7f2' }],
-  },
-  {
-    featureType: 'water',
-    elementType: 'labels.text.fill',
-    stylers: [{ color: '#93a7bd' }],
-  },
-
-  /*
-   * Roads, kept but recessive.
-   *
-   * Removing them entirely reads as prettier and is worse: without a road
-   * network an operator cannot tell whether a stopped lorry is on a highway
-   * or in a yard. They are drawn in greys instead, with the arterials and
-   * highways progressively darker so the shape of the route survives.
-   */
-  {
-    featureType: 'road',
-    elementType: 'geometry',
-    stylers: [{ color: '#ffffff' }],
-  },
-  {
-    featureType: 'road',
-    elementType: 'labels.text.fill',
-    stylers: [{ color: '#9aa8b8' }],
-  },
-  {
-    featureType: 'road',
-    elementType: 'labels.icon',
-    stylers: [{ visibility: 'off' }],
-  },
-  {
-    featureType: 'road.arterial',
-    elementType: 'geometry',
-    stylers: [{ color: '#f0f3f7' }],
-  },
-  {
-    featureType: 'road.highway',
-    elementType: 'geometry',
-    stylers: [{ color: '#e4e9f0' }],
-  },
-  {
-    featureType: 'road.highway',
-    elementType: 'geometry.stroke',
-    stylers: [{ color: '#d5dde7' }],
-  },
-
-  /* Place names stay — a position means little without a town beside it. */
-  {
-    featureType: 'administrative',
-    elementType: 'labels.text.fill',
-    stylers: [{ color: '#7d8da0' }],
-  },
-  {
-    featureType: 'administrative.province',
-    elementType: 'geometry.stroke',
-    stylers: [{ color: '#dfe6ee' }],
-  },
-];
-
 const FleetMapComponent: React.FC<FleetMapProps> = ({
   vehicles,
   height,
@@ -293,7 +197,6 @@ const FleetMapComponent: React.FC<FleetMapProps> = ({
         provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFill}
         initialRegion={region}
-        customMapStyle={MAP_STYLE}
         showsTraffic={false}
         toolbarEnabled={false}
         loadingEnabled

@@ -18,7 +18,10 @@ import { CustomerDetailsScreen } from '@screens/CustomerDetailsScreen';
 import { AddCustomerScreen } from '@screens/AddCustomerScreen';
 import { BookingReviewScreen } from '@screens/BookingReviewScreen';
 import { TripsScreen } from '@screens/TripsScreen';
+import { NewTripScreen } from '@screens/NewTripScreen';
 import { TripDetailsScreen } from '@screens/TripDetailsScreen';
+import { ReassignTripScreen } from '@screens/ReassignTripScreen';
+import { UpdateTripStatusScreen } from '@screens/UpdateTripStatusScreen';
 import { TripTimelineScreen } from '@screens/TripTimelineScreen';
 import { LiveTripTrackScreen } from '@screens/LiveTripTrackScreen';
 import { LiveFleetMapScreen } from '@screens/LiveFleetMapScreen';
@@ -27,6 +30,9 @@ import { DocumentsScreen } from '@screens/DocumentsScreen';
 import { NotificationsScreen } from '@screens/NotificationsScreen';
 import { BusinessDetailsScreen } from '@screens/BusinessDetailsScreen';
 import { LogoutConfirmScreen } from '@screens/LogoutConfirmScreen';
+import { ReportsScreen } from '@screens/ReportsScreen';
+import { ReportViewScreen } from '@screens/ReportViewScreen';
+import { TripFinanceScreen } from '@screens/TripFinanceScreen';
 import { useTheme } from '@theme/ThemeProvider';
 import { palette } from '@theme/colors';
 import { watchNotificationTaps } from '@services/push';
@@ -122,13 +128,22 @@ export const RootNavigator: React.FC = () => {
         {/* Bookings & trips */}
         <Stack.Screen name="BookingReview" component={BookingReviewScreen} />
         <Stack.Screen name="Trips" component={TripsScreen} />
+        <Stack.Screen name="NewTrip" component={NewTripScreen} />
         <Stack.Screen name="TripDetails" component={TripDetailsScreen} />
+        <Stack.Screen name="ReassignTrip" component={ReassignTripScreen} />
+        <Stack.Screen
+          name="UpdateTripStatus"
+          component={UpdateTripStatusScreen}
+        />
+        <Stack.Screen name="TripFinance" component={TripFinanceScreen} />
         <Stack.Screen name="TripTimeline" component={TripTimelineScreen} />
         <Stack.Screen name="LiveTripTrack" component={LiveTripTrackScreen} />
         <Stack.Screen name="LiveFleetMap" component={LiveFleetMapScreen} />
         <Stack.Screen name="PodViewer" component={PodViewerScreen} />
 
         {/* Account */}
+        <Stack.Screen name="Reports" component={ReportsScreen} />
+        <Stack.Screen name="ReportView" component={ReportViewScreen} />
         <Stack.Screen name="Documents" component={DocumentsScreen} />
         <Stack.Screen name="Notifications" component={NotificationsScreen} />
         <Stack.Screen name="BusinessDetails" component={BusinessDetailsScreen} />

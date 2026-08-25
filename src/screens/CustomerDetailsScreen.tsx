@@ -78,6 +78,10 @@ export const CustomerDetailsScreen: React.FC = () => {
   const email: string = customer?.email || customer?.user?.email || '';
   const gstin: string = customer?.gstin ?? '';
   const verified: boolean = Boolean(customer?.verified);
+  const address: string =
+    [customer?.addressLine, customer?.city, customer?.state]
+      .filter(Boolean)
+      .join(', ') || 'No address on file';
   const tripCount: number = Number(customer?._count?.bookings ?? 0);
 
   const initials = company
@@ -295,9 +299,7 @@ export const CustomerDetailsScreen: React.FC = () => {
                 <Text style={styles.bizName} numberOfLines={1}>
                   {company}
                 </Text>
-                <Text style={styles.bizAddress}>
-                  Plot 42, Industrial Estate, Gachibowli, Hyderabad - 500032
-                </Text>
+                <Text style={styles.bizAddress}>{address}</Text>
               </View>
             </View>
 
@@ -305,9 +307,11 @@ export const CustomerDetailsScreen: React.FC = () => {
               <Text style={styles.gstLabel}>GSTIN</Text>
               {/* A GSTIN nobody supplied is not a GSTIN. */}
               <Text style={styles.gstValue}>{gstin || 'Not provided'}</Text>
-              <View style={styles.pillGold}>
-                <Text style={styles.pillGoldText}>VERIFIED</Text>
-              </View>
+              {verified && gstin ? (
+                <View style={styles.pillGold}>
+                  <Text style={styles.pillGoldText}>VERIFIED</Text>
+                </View>
+              ) : null}
             </View>
           </Card>
         </View>

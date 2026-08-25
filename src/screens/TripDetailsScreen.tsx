@@ -126,6 +126,17 @@ export const TripDetailsScreen: React.FC = () => {
   const customerContact: string = customer?.user?.name ?? '';
   const customerMobile: string = customer?.user?.mobile ?? '';
 
+  // The route, with the full street address the driver actually needs on the
+  // road — the booking carries a short place ("Kondapur") and a fuller address.
+  const pickupPlace: string = String(booking?.pickupPlace ?? '—');
+  const dropPlace: string = String(booking?.dropPlace ?? '—');
+  const pickupAddress: string = booking?.pickupAddress
+    ? String(booking.pickupAddress)
+    : '';
+  const dropAddress: string = booking?.dropAddress
+    ? String(booking.dropAddress)
+    : '';
+
   /* What the booking and the trip actually carry between them. */
   const docCount =
     ((booking?.documents as unknown[] | undefined)?.length ?? 0) +
@@ -167,6 +178,22 @@ export const TripDetailsScreen: React.FC = () => {
     Linking.openURL(`tel:${customerMobile}`).catch(() => undefined);
   }, [customerMobile]);
 
+  const openReassign = useCallback(
+    () => navigation.navigate('ReassignTrip', { tripId }),
+    [navigation, tripId],
+  );
+
+  const openStatus = useCallback(
+    () => navigation.navigate('UpdateTripStatus', { tripId }),
+    [navigation, tripId],
+  );
+
+  // Only a running trip can be handed over or moved on; a delivered or
+  // cancelled one is settled, so these actions are offered only while there is
+  // something to change.
+  const canReassign =
+    trip?.status === 'SCHEDULED' || trip?.status === 'IN_TRANSIT';
+
   const openTimeline = useCallback(
     () => navigation.navigate('TripTimeline', { tripId }),
     [navigation, tripId],
@@ -180,6 +207,15 @@ export const TripDetailsScreen: React.FC = () => {
   const openPod = useCallback(
     () => navigation.navigate('PodViewer', { tripId }),
     [navigation, tripId],
+  );
+
+  const openFinance = useCallback(
+    () =>
+      navigation.navigate('TripFinance', {
+        tripId,
+        reference: trip?.reference ?? tripId,
+      }),
+    [navigation, tripId, trip?.reference],
   );
 
   return (
@@ -279,6 +315,53 @@ export const TripDetailsScreen: React.FC = () => {
           </View>
         </LinearGradient>
 
+        {/* Route — from and to with full addresses, what a driver on the road
+            reads to reach the pickup and the drop. */}
+        <Text style={styles.section}>ROUTE</Text>
+        <Card padding={12}>
+          <View style={styles.routeRow}>
+            <IconWell
+              icon="map-pin"
+              size={32}
+              iconSize={15}
+              backgroundColor={palette.navyTint}
+              color={palette.navy}
+              borderRadius={radius.md}
+            />
+            <View style={styles.routeBody}>
+              <Text style={styles.routeLabel}>FROM</Text>
+              <Text style={styles.routePlace} numberOfLines={1}>
+                {pickupPlace}
+              </Text>
+              {pickupAddress ? (
+                <Text style={styles.routeAddr}>{pickupAddress}</Text>
+              ) : null}
+            </View>
+          </View>
+
+          <View style={styles.routeDivider} />
+
+          <View style={styles.routeRow}>
+            <IconWell
+              icon="map-pin"
+              size={32}
+              iconSize={15}
+              backgroundColor={palette.redTint}
+              color={palette.red}
+              borderRadius={radius.md}
+            />
+            <View style={styles.routeBody}>
+              <Text style={styles.routeLabel}>TO</Text>
+              <Text style={styles.routePlace} numberOfLines={1}>
+                {dropPlace}
+              </Text>
+              {dropAddress ? (
+                <Text style={styles.routeAddr}>{dropAddress}</Text>
+              ) : null}
+            </View>
+          </View>
+        </Card>
+
         {/* Driver + vehicle */}
         <Text style={styles.section}>DRIVER &amp; VEHICLE</Text>
         <Card padding={11}>
@@ -345,6 +428,36 @@ export const TripDetailsScreen: React.FC = () => {
               decide whether to worry.
             */}
           </View>
+
+          {/* Office controls — change the status, or swap the driver/lorry. */}
+          {canReassign ? (
+            <>
+              <Button
+                label="Update trip status"
+                variant="outline"
+                icon="clipboard-check"
+                iconSize={14}
+                padding={9}
+                fontSize={11}
+                gap={6}
+                borderColor={palette.border}
+                onPress={openStatus}
+                style={styles.reassignBtn}
+              />
+              <Button
+                label="Reassign driver or vehicle"
+                variant="outline"
+                icon="user-cog"
+                iconSize={14}
+                padding={9}
+                fontSize={11}
+                gap={6}
+                borderColor={palette.border}
+                onPress={openReassign}
+                style={styles.reassignBtn}
+              />
+            </>
+          ) : null}
         </Card>
 
         {/* Customer */}
@@ -423,6 +536,33 @@ export const TripDetailsScreen: React.FC = () => {
         </View>
         </>
         ) : null}
+
+        {/* Money — revenue billed, payments received, running costs */}
+        {trip ? (
+          <Card
+            padding={11}
+            onPress={openFinance}
+            accessibilityLabel="Payments and revenue"
+          >
+            <View style={styles.financeRow}>
+              <IconWell
+                icon="credit-card"
+                size={34}
+                iconSize={16}
+                backgroundColor={palette.navyTint}
+                color={palette.navy}
+                borderRadius={radius.md}
+              />
+              <View style={styles.financeBody}>
+                <Text style={styles.financeTitle}>Payments &amp; Revenue</Text>
+                <Text style={styles.financeSub} numberOfLines={1}>
+                  Fare, payments received and trip expenses
+                </Text>
+              </View>
+              <Icon name="chevron-right" size={18} color={palette.slate400} />
+            </View>
+          </Card>
+        ) : null}
       </Content>
 
       <Footer row>
@@ -455,6 +595,23 @@ export const TripDetailsScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  routeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: s(11) },
+  routeBody: { flex: 1, minWidth: 0 },
+  routeLabel: font(8, '800', { color: palette.slate500, letterSpacing: 0.8 }),
+  routePlace: font(13, '800', { color: palette.navy }),
+  routeAddr: font(10, '500', { color: palette.slate500 }),
+  routeDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: palette.border,
+    marginVertical: s(10),
+    marginLeft: s(43),
+  },
+
+  financeRow: { flexDirection: 'row', alignItems: 'center', gap: s(11) },
+  financeBody: { flex: 1, minWidth: 0 },
+  financeTitle: font(12, '800', { color: palette.navy }),
+  financeSub: font(9, '500', { color: palette.slate500 }),
+
   hero: {
     borderRadius: radius.xl,
     padding: s(14),
@@ -558,6 +715,7 @@ const styles = StyleSheet.create({
     borderTopColor: palette.gray200,
     borderStyle: 'dashed',
   },
+  reassignBtn: { marginTop: s(10) },
   gps: font(9, '800', { color: palette.gold }),
 
   customerRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },

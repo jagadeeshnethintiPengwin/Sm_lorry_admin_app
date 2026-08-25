@@ -23,6 +23,12 @@ const initialState: AuthState = {
   error: null,
 };
 
+export const login = createAsyncThunk(
+  'auth/login',
+  ({ email, password }: { email: string; password: string }) =>
+    authService.login(email, password),
+);
+
 export const sendOtp = createAsyncThunk('auth/sendOtp', (mobile: string) =>
   authService.sendOtp(mobile),
 );
@@ -59,6 +65,19 @@ const authSlice = createSlice({
   },
   extraReducers: builder => {
     builder
+      .addCase(login.pending, state => {
+        state.status = 'loading';
+        state.error = null;
+      })
+      .addCase(login.fulfilled, (state, action) => {
+        state.status = 'idle';
+        state.profile = action.payload.profile;
+        state.isAuthenticated = true;
+      })
+      .addCase(login.rejected, (state, action) => {
+        state.status = 'failed';
+        state.error = action.error.message ?? 'Email or password is not correct';
+      })
       .addCase(sendOtp.pending, state => {
         state.status = 'loading';
         state.error = null;

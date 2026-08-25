@@ -82,11 +82,19 @@ export type RootStackParamList = {
   // Bookings & trips
   BookingReview: { bookingId: string };
   Trips: undefined;
+  NewTrip: undefined;
   TripDetails: { tripId: string };
+  ReassignTrip: { tripId: string };
+  UpdateTripStatus: { tripId: string };
+  TripFinance: { tripId: string; reference: string };
   TripTimeline: { tripId: string };
   LiveTripTrack: { tripId: string };
   LiveFleetMap: undefined;
   PodViewer: { tripId: string };
+
+  // Reports
+  Reports: undefined;
+  ReportView: { kind: string; title: string };
 
   // Account
   Documents: undefined;

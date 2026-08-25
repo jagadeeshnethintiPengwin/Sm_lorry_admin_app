@@ -45,6 +45,8 @@ import type { RootStackParamList } from '@navigation/types';
  * readable as separate surfaces. Any offset belongs on the first child rather
  * than the ScrollView, which would corrupt content-height measurement.
  */
+type StatTarget = 'vehicles' | 'drivers' | 'customers' | 'trips';
+
 type Stat = {
   label: string;
   value: string;
@@ -52,6 +54,8 @@ type Stat = {
   icon: IconName;
   bg: string;
   color: string;
+  /** The screen this cell opens when tapped. */
+  target: StatTarget;
 };
 
 /**
@@ -74,6 +78,7 @@ function statsOf(summary: DashboardSummary | null): Stat[] {
       icon: 'truck',
       bg: palette.navyTint,
       color: palette.navy,
+      target: 'vehicles',
     },
     {
       label: 'DRIVERS',
@@ -82,6 +87,7 @@ function statsOf(summary: DashboardSummary | null): Stat[] {
       icon: 'user-cog',
       bg: palette.goldTint,
       color: palette.gold,
+      target: 'drivers',
     },
     {
       label: 'CUSTOMERS',
@@ -90,6 +96,7 @@ function statsOf(summary: DashboardSummary | null): Stat[] {
       icon: 'users',
       bg: palette.redTint,
       color: palette.red,
+      target: 'customers',
     },
     {
       label: 'DELIVERED',
@@ -98,6 +105,7 @@ function statsOf(summary: DashboardSummary | null): Stat[] {
       icon: 'check-circle-2',
       bg: palette.navyTint,
       color: palette.navy,
+      target: 'trips',
     },
   ];
 }
@@ -276,6 +284,23 @@ export const DashboardScreen: React.FC = () => {
     [navigation],
   );
   const openTrips = useCallback(() => navigation.navigate('Trips'), [navigation]);
+
+  // Each stat cell opens its own screen: Fleet → Vehicles, Drivers, Customers,
+  // Delivered → Trips. Vehicles and Drivers are tabs; the rest are stack screens.
+  const openStat = useCallback(
+    (target: StatTarget) => {
+      if (target === 'vehicles') {
+        navigation.navigate('Tabs', { screen: 'Vehicles' });
+      } else if (target === 'drivers') {
+        navigation.navigate('Tabs', { screen: 'Drivers' });
+      } else if (target === 'customers') {
+        navigation.navigate('Customers');
+      } else {
+        navigation.navigate('Trips');
+      }
+    },
+    [navigation],
+  );
   /**
    * The lorry actually on the road, if there is one.
    *
@@ -520,7 +545,14 @@ export const DashboardScreen: React.FC = () => {
         {/* 4-cell stats */}
         <View style={styles.grid}>
           {stats.map(stat => (
-            <Card key={stat.label} padding={11} marginBottom={0} style={styles.gridCell}>
+            <Card
+              key={stat.label}
+              padding={11}
+              marginBottom={0}
+              style={styles.gridCell}
+              onPress={() => openStat(stat.target)}
+              accessibilityLabel={`${stat.label}: ${stat.value}. Open`}
+            >
               <View style={styles.statHead}>
                 <View style={[styles.statTile, { backgroundColor: stat.bg }]}>
                   <Icon name={stat.icon} size={16} color={stat.color} />

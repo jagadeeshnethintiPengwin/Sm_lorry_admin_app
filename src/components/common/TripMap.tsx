@@ -42,22 +42,6 @@ export type TripMapProps = {
   style?: StyleProp<ViewStyle>;
 };
 
-/** Muted styling so the map sits behind the brand UI instead of fighting it. */
-const MAP_STYLE = [
-  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-  {
-    featureType: 'water',
-    elementType: 'geometry',
-    stylers: [{ color: '#e8eef7' }],
-  },
-  {
-    featureType: 'landscape',
-    elementType: 'geometry',
-    stylers: [{ color: '#f5f7fa' }],
-  },
-];
-
 const TripMapComponent: React.FC<TripMapProps> = ({
   pickup,
   drop,
@@ -92,7 +76,6 @@ const TripMapComponent: React.FC<TripMapProps> = ({
         provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFill}
         initialRegion={region}
-        customMapStyle={MAP_STYLE}
         showsTraffic={false}
         toolbarEnabled={false}
         loadingEnabled

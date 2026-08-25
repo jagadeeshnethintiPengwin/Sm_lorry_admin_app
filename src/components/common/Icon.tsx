@@ -54,6 +54,7 @@ const iconMap = {
   lock: Lucide.Lock,
   'log-in': Lucide.LogIn,
   'log-out': Lucide.LogOut,
+  mail: Lucide.Mail,
   'map-pin': Lucide.MapPin,
   menu: Lucide.Menu,
   'message-square-text': Lucide.MessageSquareText,

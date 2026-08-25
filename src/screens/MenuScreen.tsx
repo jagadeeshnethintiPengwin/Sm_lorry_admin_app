@@ -96,6 +96,15 @@ export const MenuScreen: React.FC = () => {
       color: palette.navy,
       go: () => navigation.navigate('Documents'),
     },
+    {
+      id: 'reports',
+      title: 'Reports',
+      meta: 'Financial year · trips · revenue',
+      icon: 'layout-dashboard',
+      bg: palette.redTint,
+      color: palette.red,
+      go: () => navigation.navigate('Reports'),
+    },
   ];
 
   const account: MenuRow[] = [

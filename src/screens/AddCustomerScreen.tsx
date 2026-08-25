@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 
 import {
@@ -14,6 +14,7 @@ import {
   Select,
   Toggle,
 } from '@components/index';
+import { customerService } from '@services/fleet.service';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -53,9 +54,45 @@ export const AddCustomerScreen: React.FC = () => {
   const [pin, setPin] = useState('');
   const [state, setState] = useState('TS');
   const [welcomeSms, setWelcomeSms] = useState(true);
+  const [busy, setBusy] = useState(false);
 
   const selectIndividual = useCallback(() => setType('individual'), []);
   const selectCompany = useCallback(() => setType('company'), []);
+
+  // Saves the account to the roster. Company, contact and mobile are the only
+  // hard requirements — a customer is identified by name and phone, so the
+  // address block stays optional, matching what the API now accepts.
+  const save = useCallback(async () => {
+    if (!company.trim() || !name.trim() || !mobile.trim()) {
+      Alert.alert(
+        'Missing details',
+        'Company / name, a contact person and a mobile number are required.',
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      const stateLabel = STATES.find(o => o.value === state)?.label ?? state;
+      await customerService.create({
+        company: company.trim(),
+        contactName: name.trim(),
+        mobile: mobile.trim(),
+        ...(email.trim() ? { email: email.trim() } : {}),
+        ...(stateLabel ? { state: stateLabel } : {}),
+        ...(gstin.trim() ? { gstin: gstin.trim() } : {}),
+        ...(address.trim() ? { addressLine: address.trim() } : {}),
+        ...(city.trim() ? { city: city.trim() } : {}),
+      });
+      navigation.goBack();
+    } catch (e) {
+      Alert.alert(
+        'Could not add customer',
+        e instanceof Error ? e.message : 'Please try again.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [company, name, mobile, email, state, gstin, address, city, navigation]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -270,12 +307,14 @@ export const AddCustomerScreen: React.FC = () => {
 
       <Footer>
         <Button
-          label="Save Customer"
+          label={busy ? 'Saving…' : 'Save Customer'}
           variant="gold"
           icon="check-circle-2"
           padding={12}
           fontSize={13}
-          onPress={navigation.goBack}
+          loading={busy}
+          disabled={busy}
+          onPress={save}
         />
       </Footer>
     </Screen>

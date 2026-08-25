@@ -1,12 +1,10 @@
 import React, { useCallback, useState } from 'react';
 import { Image, StyleSheet, Text, TextInput, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { Button, Icon, IndiaFlagMini, Screen } from '@components/index';
+import { Button, Icon, Screen } from '@components/index';
 import { useAppDispatch } from '@store/index';
-import { sendOtp, setMobile as setStoreMobile } from '@store/slices/auth.slice';
+import { login } from '@store/slices/auth.slice';
 import { useTopInset } from '@hooks/useTopInset';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { alpha, gradients, palette } from '@theme/colors';
@@ -14,69 +12,34 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
-import type { AuthStackParamList } from '@navigation/types';
 
 /**
  * Screen 2 — Owner Login.
  *
- *   navy auth field · white logo card · OWNER SIGN IN crown chip ·
- *   "Welcome back, Owner" · white card with +91 mobile field and 6-digit PIN
- *   (letter-spacing:8px) · gold Sign In · reset link · gold trust badge
+ * Email + password sign-in — the same credentials as the web panel. On success
+ * the auth slice flips `isAuthenticated` and the navigator swaps to the app, so
+ * there is nothing to navigate to by hand. (The OTP / PIN endpoints are
+ * untouched on the server; this is only a change of front door.)
  */
 export const LoginScreen: React.FC = () => {
   const topInset = useTopInset();
-  const navigation =
-    useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
   const dispatch = useAppDispatch();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
-  const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
+  const canSubmit = email.trim().length > 3 && password.length >= 4;
 
-  /**
-   * Sends the code, and only then moves to the OTP screen.
-   *
-   * Three things were wrong here. A number shorter than ten digits fell back to
-   * the literal `'+91 98980 XXXXX'` and carried on, so the panel would try to
-   * sign in as a placeholder. `sendOtp` was dispatched but never awaited, so
-   * the screen advanced whether or not a code had actually been sent. And the
-   * `verificationId` the API returns — the thing the code is checked against —
-   * was thrown away.
-   */
   const signIn = useCallback(async () => {
-    const digits = mobile.replace(/\D/g, '');
-    if (digits.length !== 10 || busy) {
+    if (busy || !canSubmit) {
       return;
     }
-
-    const target = `+91${digits}`;
     setBusy(true);
     setFailure(null);
-    dispatch(setStoreMobile(target));
-
     try {
-      /*
-       * One way in: the number, and a code sent to it.
-       *
-       * The PIN was removed deliberately. Two credentials on one screen meant
-       * two ways to fail and a field most operators left blank, and an owner
-       * who had never set one saw a box asking for a secret that did not
-       * exist. A code sent to the registered number proves the same thing —
-       * possession of that number — without anything to remember, forget or
-       * reset.
-       *
-       * The PIN endpoints are untouched on the server, so this is a change of
-       * front door rather than a demolition: bringing it back is putting the
-       * field on this screen again.
-       */
-      const result = await dispatch(sendOtp(target)).unwrap();
-      navigation.navigate('OtpVerification', {
-        mobile: target,
-        verificationId: result.verificationId,
-        devCode: (result as { devCode?: string }).devCode,
-        intent: 'sign-in',
-      });
+      await dispatch(login({ email: email.trim(), password })).unwrap();
     } catch (error) {
       setFailure(
         (error as Error)?.message ||
@@ -85,7 +48,7 @@ export const LoginScreen: React.FC = () => {
     } finally {
       setBusy(false);
     }
-  }, [busy, dispatch, mobile, navigation]);
+  }, [busy, canSubmit, dispatch, email, password]);
 
   return (
     <Screen backgroundColor={palette.navy}>
@@ -133,58 +96,63 @@ export const LoginScreen: React.FC = () => {
 
         {/* Login card */}
         <View style={styles.card}>
-          <Text style={styles.label}>MOBILE NUMBER</Text>
+          <Text style={styles.label}>EMAIL</Text>
           <View style={styles.inputRow}>
-            <View style={styles.prefix}>
-              <IndiaFlagMini width={14} height={10} />
-              <Text style={styles.prefixText}>+91</Text>
+            <View style={styles.fieldIcon}>
+              <Icon name="mail" size={14} color={palette.navy} />
             </View>
             <TextInput
-              value={mobile}
-              onChangeText={setMobile}
-              placeholder="Registered mobile"
+              value={email}
+              onChangeText={setEmail}
+              placeholder="you@simhadritransport.in"
               placeholderTextColor={palette.slate400}
-              keyboardType="phone-pad"
-              maxLength={10}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              textContentType="emailAddress"
               style={styles.input}
-              accessibilityLabel="Registered mobile number"
+              accessibilityLabel="Email address"
             />
           </View>
 
-          {/*
-            No PIN field. Signing in is the number and a code sent to it — see
-            `signIn` for why, and for what would bring it back.
-          */}
-          <Text style={styles.hint}>
-            We will text a 6-digit code to this number.
-          </Text>
+          <Text style={styles.label}>PASSWORD</Text>
+          <View style={styles.inputRow}>
+            <View style={styles.fieldIcon}>
+              <Icon name="lock" size={14} color={palette.navy} />
+            </View>
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Your password"
+              placeholderTextColor={palette.slate400}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              textContentType="password"
+              onSubmitEditing={signIn}
+              returnKeyType="go"
+              style={styles.input}
+              accessibilityLabel="Password"
+            />
+          </View>
 
           {failure ? (
             <View style={styles.failure} accessibilityLiveRegion="polite">
               <Icon name="alert-circle" size={12} color={palette.red} />
               <Text style={styles.failureText}>{failure}</Text>
             </View>
-          ) : null}
+          ) : (
+            <View style={styles.failureSpacer} />
+          )}
 
           <Button
-            label={busy ? 'Sending code…' : 'Sign In'}
+            label={busy ? 'Signing in…' : 'Sign In'}
             variant="gold"
             icon="arrow-right"
             loading={busy}
-            // Ten digits before it will go: the placeholder fallback is gone.
-            disabled={busy || mobile.replace(/\D/g, '').length !== 10}
+            disabled={busy || !canSubmit}
             onPress={signIn}
           />
-
-          {/*
-            No recovery links.
-            
-            They existed to rescue a PIN, and there is no longer a PIN to
-            forget or reset — a code is sent to the registered number every
-            time, so the recovery path and the sign-in path are now the same
-            one. Leaving them would offer a way to fix a credential this screen
-            never asks for.
-          */}
         </View>
 
         {/* Trust badge */}
@@ -199,8 +167,8 @@ export const LoginScreen: React.FC = () => {
               <Icon name="shield-check" size={16} color={palette.navy} />
             </View>
             <View>
-              <Text style={styles.trustTitle}>Secured with 2-factor auth</Text>
-              <Text style={styles.trustMeta}>Bank-grade encryption</Text>
+              <Text style={styles.trustTitle}>Encrypted sign-in</Text>
+              <Text style={styles.trustMeta}>Owner and staff access only</Text>
             </View>
           </LinearGradient>
         </View>
@@ -292,6 +260,16 @@ const styles = StyleSheet.create({
     backgroundColor: palette.navyTint,
   },
   prefixText: font(11, '800', { color: palette.navy }),
+  /* The glyph tile on the left of each field — same navy chip as the +91 prefix. */
+  fieldIcon: {
+    paddingVertical: s(10),
+    paddingHorizontal: s(11),
+    backgroundColor: palette.navyTint,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  /* Holds the button in place whether or not the error line is showing. */
+  failureSpacer: { marginBottom: s(4) },
   input: {
     flex: 1,
     paddingVertical: s(10),
