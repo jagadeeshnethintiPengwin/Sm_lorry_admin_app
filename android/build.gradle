@@ -25,4 +25,14 @@ buildscript {
     }
 }
 
+ext {
+    /*
+     * Point React Native's third-party Gradle modules (gesture-handler, screens,
+     * svg) straight at the react-native package, so their build scripts never
+     * shell out to `node` just to locate it — which fails when Android Studio is
+     * launched from the Dock (its PATH omits the Homebrew/nvm node).
+     */
+    REACT_NATIVE_NODE_MODULES_DIR = new File(rootDir, "../node_modules/react-native").canonicalPath
+}
+
 apply plugin: "com.facebook.react.rootproject"

@@ -9,6 +9,10 @@ import {
   BlinkDot,
   Card,
   Content,
+  DateFilter,
+  ALL_TIME,
+  dateRangeParams,
+  type DateRange,
   Icon,
   ListState,
   RouteView,
@@ -32,19 +36,41 @@ import { useApi } from '@hooks/useApi';
  */
 type Tab = 'transit' | 'scheduled' | 'delivered' | 'cancelled';
 
+/**
+ * How each status paints its pill and left rail.
+ *
+ * The card used to know two states — in transit, or "AT PICKUP" for everything
+ * else — so a delivered or a cancelled trip wore a red "AT PICKUP" pill it had
+ * long since left behind. The status is the one thing the card must not get
+ * wrong, so all four are spelled out: a running trip pulls the eye in gold, a
+ * delivered one reads green and finished, a cancelled one greys out, and only a
+ * genuinely scheduled trip says it is waiting at the pickup.
+ */
+type PillKind = Tab;
+
 type TripRow = {
   id: string;
   reference: string;
   pickup: string;
   drop: string;
   rail: string;
-  status: 'IN TRANSIT' | 'AT PICKUP';
-  pill: 'navy' | 'red';
+  statusLabel: string;
+  pillKind: PillKind;
   driverLine?: string;
   distance?: string;
   progress?: number;
   loadingNote?: string;
   tab: Tab;
+};
+
+const STATUS_META: Record<
+  string,
+  { label: string; kind: PillKind; rail: string; tab: Tab }
+> = {
+  IN_TRANSIT: { label: 'IN TRANSIT', kind: 'transit', rail: palette.gold, tab: 'transit' },
+  SCHEDULED: { label: 'AT PICKUP', kind: 'scheduled', rail: palette.navy, tab: 'scheduled' },
+  DELIVERED: { label: 'DELIVERED', kind: 'delivered', rail: palette.green, tab: 'delivered' },
+  CANCELLED: { label: 'CANCELLED', kind: 'cancelled', rail: palette.slate400, tab: 'cancelled' },
 };
 
 /**
@@ -53,13 +79,6 @@ type TripRow = {
  * Replaces a literal list under a header claiming "18 in transit · 1,302
  * total" against a book of seventeen trips.
  */
-const TAB_FOR_STATUS: Record<string, Tab> = {
-  IN_TRANSIT: 'transit',
-  SCHEDULED: 'scheduled',
-  DELIVERED: 'delivered',
-  CANCELLED: 'cancelled',
-};
-
 function toRow(trip: AdminTrip): TripRow {
   const status = String(trip.status ?? '').toUpperCase();
   const booking = (trip.booking ?? {}) as {
@@ -73,17 +92,16 @@ function toRow(trip: AdminTrip): TripRow {
 
   const distanceKm = Number(trip.distanceKm ?? 0);
   const coveredKm = Number(trip.coveredKm ?? 0);
-  const inTransit = status === 'IN_TRANSIT';
+  const meta = STATUS_META[status] ?? STATUS_META.SCHEDULED;
 
   return {
     id: String(trip.id),
     reference: `#${trip.reference ?? ''}`,
     pickup: String(booking.pickupPlace ?? '—'),
     drop: String(booking.dropPlace ?? '—'),
-    // A running trip is the one worth pulling the eye to.
-    rail: inTransit ? palette.gold : palette.navy,
-    status: inTransit ? 'IN TRANSIT' : 'AT PICKUP',
-    pill: inTransit ? 'navy' : 'red',
+    rail: meta.rail,
+    statusLabel: meta.label,
+    pillKind: meta.kind,
     driverLine: [driver?.user?.name, vehicle?.registration]
       .filter(Boolean)
       .join(' · ') || undefined,
@@ -96,7 +114,7 @@ function toRow(trip: AdminTrip): TripRow {
       ? Math.min(100, Math.round((coveredKm / distanceKm) * 100))
       : undefined,
     loadingNote: booking.material ? String(booking.material) : undefined,
-    tab: TAB_FOR_STATUS[status] ?? 'scheduled',
+    tab: meta.tab,
   };
 }
 
@@ -114,10 +132,11 @@ export const TripsScreen: React.FC = () => {
 
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('transit');
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
 
   const { data, loading, error, refetch } = useApi(
-    () => tripService.page({ limit: 100 }),
-    [],
+    () => tripService.page({ limit: 100, ...dateRangeParams(range) }),
+    [range.from, range.to],
   );
 
   const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
@@ -209,6 +228,8 @@ export const TripsScreen: React.FC = () => {
         ))}
       </View>
 
+      <DateFilter range={range} onChange={setRange} label="Trip date" />
+
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
         <ListState
           loading={loading}
@@ -225,20 +246,18 @@ export const TripsScreen: React.FC = () => {
             key={trip.id}
             padding={11}
             onPress={() => openTrip(trip.id)}
-            accessibilityLabel={`${trip.reference}, ${trip.status}`}
+            accessibilityLabel={`${trip.reference}, ${trip.statusLabel}`}
             accentColor={trip.rail}
             accentWidth={3}
           >
             <View style={styles.head}>
               <Text style={styles.reference}>{trip.reference}</Text>
-              <View style={trip.pill === 'navy' ? styles.pillNavy : styles.pillRed}>
-                {trip.pill === 'navy' ? <BlinkDot color={palette.gold} size={4} /> : null}
-                <Text
-                  style={
-                    trip.pill === 'navy' ? styles.pillNavyText : styles.pillRedText
-                  }
-                >
-                  {trip.status}
+              <View style={[styles.pill, PILL_STYLE[trip.pillKind]]}>
+                {trip.pillKind === 'transit' ? (
+                  <BlinkDot color={palette.gold} size={4} />
+                ) : null}
+                <Text style={[styles.pillText, PILL_TEXT_STYLE[trip.pillKind]]}>
+                  {trip.statusLabel}
                 </Text>
               </View>
             </View>
@@ -330,23 +349,23 @@ const styles = StyleSheet.create({
     marginBottom: s(6),
   },
   reference: font(10, '800', { color: palette.red }),
-  pillNavy: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: s(3),
     paddingVertical: s(2),
     paddingHorizontal: s(7),
-    backgroundColor: palette.navyTint,
     borderRadius: radius.sm,
   },
-  pillNavyText: font(8, '800', { color: palette.navy }),
-  pillRed: {
-    paddingVertical: s(2),
-    paddingHorizontal: s(7),
-    backgroundColor: palette.redSoft,
-    borderRadius: radius.sm,
-  },
-  pillRedText: font(8, '800', { color: palette.redDark }),
+  pillTransit: { backgroundColor: palette.navyTint },
+  pillScheduled: { backgroundColor: palette.redSoft },
+  pillDelivered: { backgroundColor: 'rgba(22,163,74,0.14)' },
+  pillCancelled: { backgroundColor: palette.gray200 },
+  pillText: font(8, '800', {}),
+  pillTextTransit: { color: palette.navy },
+  pillTextScheduled: { color: palette.redDark },
+  pillTextDelivered: { color: palette.green },
+  pillTextCancelled: { color: palette.slate700 },
 
   route: { marginBottom: s(6) },
 
@@ -374,3 +393,19 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
 });
+
+/** Pill background per status — see `STATUS_META`. */
+const PILL_STYLE: Record<PillKind, object> = {
+  transit: styles.pillTransit,
+  scheduled: styles.pillScheduled,
+  delivered: styles.pillDelivered,
+  cancelled: styles.pillCancelled,
+};
+
+/** Pill text colour per status. */
+const PILL_TEXT_STYLE: Record<PillKind, object> = {
+  transit: styles.pillTextTransit,
+  scheduled: styles.pillTextScheduled,
+  delivered: styles.pillTextDelivered,
+  cancelled: styles.pillTextCancelled,
+};

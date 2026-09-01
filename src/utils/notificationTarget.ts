@@ -25,6 +25,9 @@ export type NotificationTarget =
   | { screen: 'TripDetails'; params: RootStackParamList['TripDetails'] }
   | { screen: 'BookingReview'; params: RootStackParamList['BookingReview'] }
   | { screen: 'VehicleDetails'; params: RootStackParamList['VehicleDetails'] }
+  | { screen: 'DriverDetails'; params: RootStackParamList['DriverDetails'] }
+  | { screen: 'CustomerDetails'; params: RootStackParamList['CustomerDetails'] }
+  | { screen: 'LiveTripTrack'; params: RootStackParamList['LiveTripTrack'] }
   | { screen: 'PodViewer'; params: RootStackParamList['PodViewer'] };
 
 /**
@@ -65,13 +68,23 @@ export function notificationTarget(
     case 'vehicles':
       return { screen: 'VehicleDetails', params: { vehicleId: identifier } };
 
+    case 'drivers':
+      return { screen: 'DriverDetails', params: { driverId: identifier } };
+
+    case 'customers':
+      return { screen: 'CustomerDetails', params: { customerId: identifier } };
+
+    /* Live tracking names the trip it follows. */
+    case 'track':
+      return { screen: 'LiveTripTrack', params: { tripId: identifier } };
+
     /* A proof-of-delivery link names the trip it belongs to. */
     case 'pod':
       return { screen: 'PodViewer', params: { tripId: identifier } };
 
     /*
-     * Anything else is addressed to a driver or a customer, or is a shape this
-     * app has no screen for. Leaving the row as text beats guessing.
+     * Anything else is a shape this app has no screen for. Leaving the row as
+     * text beats guessing.
      */
     default:
       return null;

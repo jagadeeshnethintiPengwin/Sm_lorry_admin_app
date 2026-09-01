@@ -11,6 +11,7 @@ import {
   DateField,
   Footer,
   Input,
+  PlaceInput,
   Screen,
   Select,
 } from '@components/index';
@@ -69,6 +70,17 @@ export const NewTripScreen: React.FC = () => {
 
   const [pickupPlace, setPickupPlace] = useState('');
   const [dropPlace, setDropPlace] = useState('');
+  /* The address + coordinates behind a chosen suggestion, when one was picked. */
+  const [pickupGeo, setPickupGeo] = useState<{
+    address: string;
+    lat?: number;
+    lng?: number;
+  }>({ address: '' });
+  const [dropGeo, setDropGeo] = useState<{
+    address: string;
+    lat?: number;
+    lng?: number;
+  }>({ address: '' });
   const [vehicleType, setVehicleType] = useState('');
   const [material, setMaterial] = useState('General cargo');
   const [weight, setWeight] = useState('5');
@@ -188,6 +200,16 @@ export const NewTripScreen: React.FC = () => {
         material: material.trim() || 'General cargo',
         weightTons: Number(weight),
         pickupAt,
+        // The address + coordinates ride along only when a suggestion was
+        // chosen; a hand-typed place carries none of them.
+        ...(pickupGeo.address ? { pickupAddress: pickupGeo.address } : {}),
+        ...(pickupGeo.lat != null && pickupGeo.lng != null
+          ? { pickupLat: pickupGeo.lat, pickupLng: pickupGeo.lng }
+          : {}),
+        ...(dropGeo.address ? { dropAddress: dropGeo.address } : {}),
+        ...(dropGeo.lat != null && dropGeo.lng != null
+          ? { dropLat: dropGeo.lat, dropLng: dropGeo.lng }
+          : {}),
       });
       const bookingId = str(booking.id);
 
@@ -240,6 +262,8 @@ export const NewTripScreen: React.FC = () => {
     nc,
     pickupPlace,
     dropPlace,
+    pickupGeo,
+    dropGeo,
     pickupAt,
     effectiveType,
     weight,
@@ -410,22 +434,53 @@ export const NewTripScreen: React.FC = () => {
           ROUTE <Text style={styles.star}>*</Text>
         </Text>
         <Card padding={12}>
-          <Input
+          <PlaceInput
             label="Pickup Point"
             required
             value={pickupPlace}
-            onChangeText={setPickupPlace}
-            placeholder="e.g. Kondapur, Hyderabad"
+            onChangeText={place => {
+              setPickupPlace(place);
+              // Typing again breaks the tie to the chosen place.
+              setPickupGeo({ address: '' });
+            }}
+            onSelect={detail =>
+              setPickupGeo({
+                address: detail.address,
+                lat: detail.latitude,
+                lng: detail.longitude,
+              })
+            }
+            placeholder="Start typing — e.g. Kondapur"
             marginBottom={10}
           />
-          <Input
+          {pickupGeo.address ? (
+            <Text style={styles.geoHint} numberOfLines={1}>
+              {pickupGeo.address}
+            </Text>
+          ) : null}
+          <PlaceInput
             label="Drop Point"
             required
             value={dropPlace}
-            onChangeText={setDropPlace}
-            placeholder="e.g. Gachibowli, Hyderabad"
+            onChangeText={place => {
+              setDropPlace(place);
+              setDropGeo({ address: '' });
+            }}
+            onSelect={detail =>
+              setDropGeo({
+                address: detail.address,
+                lat: detail.latitude,
+                lng: detail.longitude,
+              })
+            }
+            placeholder="Start typing — e.g. Gachibowli"
             marginBottom={0}
           />
+          {dropGeo.address ? (
+            <Text style={styles.geoHint} numberOfLines={1}>
+              {dropGeo.address}
+            </Text>
+          ) : null}
         </Card>
 
         {/* LOAD */}
@@ -552,6 +607,11 @@ const styles = StyleSheet.create({
   },
   sectionGap: { marginTop: s(14) },
   star: font(9, '800', { color: palette.red }),
+  geoHint: {
+    ...font(9, '500', { color: palette.slate500 }),
+    marginTop: s(4),
+    marginBottom: s(10),
+  },
 
   row: { flexDirection: 'row', gap: s(8) },
   col: { flex: 1, minWidth: 0 },

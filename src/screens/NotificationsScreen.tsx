@@ -258,6 +258,15 @@ export const NotificationsScreen: React.FC = () => {
         case 'VehicleDetails':
           navigation.navigate('VehicleDetails', target.params);
           break;
+        case 'DriverDetails':
+          navigation.navigate('DriverDetails', target.params);
+          break;
+        case 'CustomerDetails':
+          navigation.navigate('CustomerDetails', target.params);
+          break;
+        case 'LiveTripTrack':
+          navigation.navigate('LiveTripTrack', target.params);
+          break;
         case 'PodViewer':
           navigation.navigate('PodViewer', target.params);
           break;

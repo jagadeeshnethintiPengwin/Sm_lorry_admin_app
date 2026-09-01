@@ -19,6 +19,7 @@ export * from './common/StatTile';
 export * from './common/TabBar';
 export * from './common/Loader';
 export * from './common/ListState';
+export * from './common/DateFilter';
 
 // Headers
 export * from './headers/AppHeader';
@@ -28,6 +29,7 @@ export * from './buttons/Button';
 
 // Inputs
 export * from './inputs/Input';
+export * from './inputs/PlaceInput';
 export * from './inputs/Select';
 export * from './inputs/Field';
 

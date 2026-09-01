@@ -9,6 +9,10 @@ import {
   BlinkDot,
   Card,
   Content,
+  DateFilter,
+  ALL_TIME,
+  dateRangeParams,
+  type DateRange,
   Icon,
   ListState,
   Screen,
@@ -135,6 +139,7 @@ export const VehiclesScreen: React.FC = () => {
 
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'in_trip' | 'available'>('in_trip');
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
 
   /*
    * The whole fleet in one read, filtered here.
@@ -144,8 +149,8 @@ export const VehiclesScreen: React.FC = () => {
    * second request for the counts. A fleet is tens of lorries, not thousands.
    */
   const { data, loading, error, refetch } = useApi(
-    () => vehicleService.page({ limit: 100 }),
-    [],
+    () => vehicleService.page({ limit: 100, ...dateRangeParams(range) }),
+    [range.from, range.to],
   );
 
   const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
@@ -235,6 +240,8 @@ export const VehiclesScreen: React.FC = () => {
           </Text>
         </Pressable>
       </View>
+
+      <DateFilter range={range} onChange={setRange} label="Added" />
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
         <ListState

@@ -117,6 +117,18 @@ export type NewBooking = {
   material: string;
   weightTons: number;
   pickupAt: string;
+  /**
+   * The full address and coordinates behind a chosen suggestion, when the
+   * pickup/drop were picked from the autocomplete rather than typed. The
+   * coordinates put the leg on the live tracking map and let the backend
+   * measure it; all optional, since a hand-typed place has none of them.
+   */
+  pickupAddress?: string;
+  pickupLat?: number;
+  pickupLng?: number;
+  dropAddress?: string;
+  dropLat?: number;
+  dropLng?: number;
 };
 
 /**
@@ -212,6 +224,28 @@ export const driverService = {
     await apiClient.post(`/drivers/${driverId}/documents`, body);
   },
 
+  /**
+   * Approve or reject one licence/KYC scan. Until every document is approved the
+   * driver cannot be assigned a trip — the backend refuses it — so this is the
+   * office's onboarding gate, the same one the web panel drives.
+   */
+  reviewDocument: async (
+    driverId: string,
+    documentId: string,
+    status: 'APPROVED' | 'REJECTED',
+    note?: string,
+  ): Promise<void> => {
+    await apiClient.post(
+      `/drivers/${driverId}/documents/${documentId}/review`,
+      { status, ...(note ? { note } : {}) },
+    );
+  },
+
+  /** Approve every pending scan on this driver in one call. */
+  approveAllDocuments: async (driverId: string): Promise<void> => {
+    await apiClient.post(`/drivers/${driverId}/documents/approve-all`);
+  },
+
   remove: (id: string) => apiClient.delete(`/drivers/${id}`),
 };
 
@@ -299,6 +333,21 @@ export const customerService = {
   /** Add a customer to the roster — used by Add Customer and the walk-in flow. */
   create: async (body: NewCustomer): Promise<AdminCustomer> => {
     const { data } = await apiClient.post<AdminCustomer>('/customers', body);
+    return data;
+  },
+  /**
+   * The office's KYC verdict on an account. A customer who signed up in the app
+   * is unverified until this is set, and a trip cannot be assigned to their
+   * booking until it is — the same gate the web panel uses.
+   */
+  verify: async (
+    id: string,
+    verified = true,
+  ): Promise<{ id: string; verified: boolean }> => {
+    const { data } = await apiClient.post<{ id: string; verified: boolean }>(
+      `/customers/${id}/verify`,
+      { verified },
+    );
     return data;
   },
 };

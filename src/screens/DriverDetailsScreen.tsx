@@ -1,17 +1,25 @@
-import React, { useCallback, useMemo } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Linking,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { driverService, tripService } from '@services/fleet.service';
+import { documentService, driverService, tripService } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
 
 import {
   AppHeader,
   Button,
   Card,
+  ConfirmDialog,
   Content,
   Icon,
   IconWell,
@@ -24,6 +32,8 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
+import type { ConfirmTone } from '@components/modals/ConfirmDialog';
+import { openExternalUrl } from '@utils/openExternalUrl';
 import type { RootStackParamList } from '@navigation/types';
 
 /**
@@ -41,6 +51,17 @@ type KycRow = {
   icon: IconName;
   bg: string;
   color: string;
+  reviewStatus: 'APPROVED' | 'PENDING' | 'REJECTED' | string;
+};
+
+/** A pending decision or outcome shown by the dialog at the foot of the screen. */
+type Dialog = {
+  tone: ConfirmTone;
+  icon: IconName;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
 };
 
 
@@ -59,7 +80,7 @@ export const DriverDetailsScreen: React.FC = () => {
    * rang one number and the vehicle card opened an id that does not exist,
    * which is a Vehicle Details screen that 404s and never loads.
    */
-  const { data } = useApi(() => driverService.get(driverId), [driverId]);
+  const { data, refetch } = useApi(() => driverService.get(driverId), [driverId]);
 
   const vehicle = (data?.vehicle ?? null) as {
     id?: string;
@@ -131,9 +152,77 @@ export const DriverDetailsScreen: React.FC = () => {
         icon: style.icon,
         bg: style.bg,
         color: style.color,
+        reviewStatus: String(row.reviewStatus ?? 'PENDING'),
       };
     });
   }, [data?.documents, licence]);
+
+  /*
+   * The onboarding gate. A driver cannot be assigned a trip until every paper is
+   * approved — the backend refuses it — so the office clears them here, the same
+   * review the web panel does. A driver with no documents on file is left
+   * assignable (the roster predates the rule), which is why an empty list is not
+   * treated as "pending".
+   */
+  const pendingCount = useMemo(
+    () => kyc.filter(row => row.reviewStatus !== 'APPROVED').length,
+    [kyc],
+  );
+
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [approvingAll, setApprovingAll] = useState(false);
+  const [openingDoc, setOpeningDoc] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const closeDialog = useCallback(() => setDialog(null), []);
+
+  /**
+   * Opens the scan the driver filed — the file itself, through a signed link,
+   * in the device's own viewer. The office reviews a document by looking at it,
+   * so the row opens it rather than jumping to another screen.
+   */
+  const viewDoc = useCallback(async (documentId: string) => {
+    setOpeningDoc(documentId);
+    try {
+      await openExternalUrl(await documentService.downloadUrl(documentId));
+    } catch (failure) {
+      setDialog({
+        tone: 'danger',
+        icon: 'alert-circle',
+        title: 'Could not open it',
+        message:
+          failure instanceof Error
+            ? failure.message
+            : 'That document is not available.',
+        confirmLabel: 'Close',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setOpeningDoc(null);
+    }
+  }, []);
+
+  const reviewDoc = useCallback(
+    async (documentId: string, status: 'APPROVED' | 'REJECTED') => {
+      setReviewingId(documentId);
+      try {
+        await driverService.reviewDocument(driverId, documentId, status);
+        await refetch();
+      } finally {
+        setReviewingId(null);
+      }
+    },
+    [driverId, refetch],
+  );
+
+  const approveAll = useCallback(async () => {
+    setApprovingAll(true);
+    try {
+      await driverService.approveAllDocuments(driverId);
+      await refetch();
+    } finally {
+      setApprovingAll(false);
+    }
+  }, [driverId, refetch]);
 
   /** How long they have been with the firm, from `joinedAt`. */
   const tenure = (() => {
@@ -331,7 +420,10 @@ export const DriverDetailsScreen: React.FC = () => {
                       {trip.route?.split('→')[0]?.trim() || '—'}
                     </Text>
                     <Icon name="arrow-right" size={14} color={palette.gold} />
-                    <Text style={styles.tripCity} numberOfLines={1}>
+                    <Text
+                      style={[styles.tripCity, styles.tripCityDrop]}
+                      numberOfLines={1}
+                    >
                       {trip.route?.split('→')[1]?.trim() || '—'}
                     </Text>
                   </View>
@@ -384,9 +476,35 @@ export const DriverDetailsScreen: React.FC = () => {
           </Card>
         </View>
 
-        {/* Personal details */}
+        {/* Documents — the onboarding approval gate */}
         <View style={styles.block}>
-          <Text style={styles.section}>PERSONAL DETAILS</Text>
+          <View style={styles.sectionRow}>
+            <Text style={[styles.section, styles.sectionNoMargin]}>DOCUMENTS</Text>
+            {pendingCount > 0 ? (
+              <Pressable
+                style={styles.approveAllBtn}
+                disabled={approvingAll}
+                onPress={approveAll}
+              >
+                <Icon name="check-circle-2" size={12} color={palette.navy} />
+                <Text style={styles.approveAllText}>
+                  {approvingAll ? 'Approving…' : `Approve all (${pendingCount})`}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {pendingCount > 0 ? (
+            <View style={styles.gateNote}>
+              <Icon name="alert-triangle" size={13} color="#8a5a00" />
+              <Text style={styles.gateNoteText}>
+                {pendingCount} document{pendingCount > 1 ? 's' : ''} awaiting your
+                review. A trip can&apos;t be assigned to this driver until every
+                paper is approved.
+              </Text>
+            </View>
+          ) : null}
+
           <View style={styles.kycCard}>
             {!kyc.length ? (
               <View style={styles.kycRow}>
@@ -395,28 +513,95 @@ export const DriverDetailsScreen: React.FC = () => {
                 </Text>
               </View>
             ) : null}
-            {kyc.map((row, index) => (
-              <View
-                key={row.id}
-                style={[styles.kycRow, index < kyc.length - 1 && styles.kycDivider]}
-              >
-                <IconWell
-                  icon={row.icon}
-                  size={26}
-                  iconSize={14}
-                  backgroundColor={row.bg}
-                  color={row.color}
-                  borderRadius={radius.md}
-                />
-                <View style={styles.kycBody}>
-                  <Text style={styles.kycTitle}>{row.title}</Text>
-                  <Text style={styles.kycMeta}>{row.meta}</Text>
+            {kyc.map((row, index) => {
+              const approved = row.reviewStatus === 'APPROVED';
+              const rejected = row.reviewStatus === 'REJECTED';
+              const busy = reviewingId === row.id;
+              return (
+                <View
+                  key={row.id}
+                  style={index < kyc.length - 1 ? styles.kycDivider : undefined}
+                >
+                  <Pressable
+                    onPress={() => viewDoc(row.id)}
+                    disabled={openingDoc !== null}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open ${row.title}`}
+                    accessibilityState={{ busy: openingDoc === row.id }}
+                    style={({ pressed }) => [
+                      styles.kycRow,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <IconWell
+                      icon={row.icon}
+                      size={26}
+                      iconSize={14}
+                      backgroundColor={row.bg}
+                      color={row.color}
+                      borderRadius={radius.md}
+                    />
+                    <View style={styles.kycBody}>
+                      <Text style={styles.kycTitle}>{row.title}</Text>
+                      <Text style={styles.kycMeta}>{row.meta}</Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        approved
+                          ? styles.statusApproved
+                          : rejected
+                            ? styles.statusRejected
+                            : styles.statusPending,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.statusPillText,
+                          approved
+                            ? styles.statusApprovedText
+                            : rejected
+                              ? styles.statusRejectedText
+                              : styles.statusPendingText,
+                        ]}
+                      >
+                        {approved ? 'APPROVED' : rejected ? 'REJECTED' : 'PENDING'}
+                      </Text>
+                    </View>
+                    {openingDoc === row.id ? (
+                      <ActivityIndicator size="small" color={palette.navy} />
+                    ) : (
+                      <Icon name="eye" size={14} color={palette.slate400} />
+                    )}
+                  </Pressable>
+
+                  {!approved ? (
+                    <View style={styles.reviewRow}>
+                      <Pressable
+                        style={[styles.reviewBtn, styles.reviewApprove]}
+                        disabled={busy}
+                        onPress={() => reviewDoc(row.id, 'APPROVED')}
+                      >
+                        <Icon name="check-circle-2" size={12} color={palette.navy} />
+                        <Text style={styles.reviewApproveText}>
+                          {busy ? 'Saving…' : 'Approve'}
+                        </Text>
+                      </Pressable>
+                      {!rejected ? (
+                        <Pressable
+                          style={[styles.reviewBtn, styles.reviewReject]}
+                          disabled={busy}
+                          onPress={() => reviewDoc(row.id, 'REJECTED')}
+                        >
+                          <Icon name="x" size={12} color={palette.red} />
+                          <Text style={styles.reviewRejectText}>Reject</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
-                <View style={styles.pillGold}>
-                  <Text style={styles.pillGoldText}>VERIFIED</Text>
-                </View>
-              </View>
-            ))}
+              );
+            })}
           </View>
         </View>
 
@@ -429,6 +614,17 @@ export const DriverDetailsScreen: React.FC = () => {
           />
         </View>
       </Content>
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        tone={dialog?.tone}
+        icon={dialog?.icon}
+        title={dialog?.title ?? ''}
+        message={dialog?.message}
+        confirmLabel={dialog?.confirmLabel}
+        onConfirm={() => dialog?.onConfirm()}
+        onCancel={closeDialog}
+      />
     </Screen>
   );
 };
@@ -534,7 +730,10 @@ const styles = StyleSheet.create({
   tripRef: font(9, '800', { color: palette.gold, letterSpacing: 0.5 }),
   tripKm: font(9, '800', { color: palette.gold }),
   tripRoute: { flexDirection: 'row', alignItems: 'center', gap: s(6) },
-  tripCity: font(11, '800', { color: palette.white }),
+  // Each end takes half the row and truncates, so a long pickup address no
+  // longer swallows the line and pushes the arrow and drop out of alignment.
+  tripCity: { ...font(11, '800', { color: palette.white }), flex: 1, minWidth: 0 },
+  tripCityDrop: { textAlign: 'right' },
 
   vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
   vehicleBody: { flex: 1 },
@@ -570,6 +769,67 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   pillGoldText: font(8, '800', { color: palette.goldText }),
+
+  sectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: s(8),
+  },
+  sectionNoMargin: { marginBottom: 0 },
+  approveAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(4),
+    paddingVertical: s(4),
+    paddingHorizontal: s(9),
+    borderRadius: radius.pill,
+    backgroundColor: palette.goldSoft,
+  },
+  approveAllText: font(9, '800', { color: palette.navy, letterSpacing: 0.3 }),
+  gateNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: s(7),
+    padding: s(10),
+    marginBottom: s(8),
+    borderRadius: radius.md,
+    backgroundColor: '#fff7e0',
+  },
+  gateNoteText: {
+    ...font(10, '600', { color: '#8a5a00', lineHeight: 1.4 }),
+    flex: 1,
+  },
+  statusPill: {
+    paddingVertical: s(2),
+    paddingHorizontal: s(7),
+    borderRadius: radius.sm,
+  },
+  statusPillText: font(8, '800', { letterSpacing: 0.4 }),
+  statusApproved: { backgroundColor: '#e8f7ee' },
+  statusApprovedText: { color: '#16a34a' },
+  statusPending: { backgroundColor: '#fff7e0' },
+  statusPendingText: { color: '#8a5a00' },
+  statusRejected: { backgroundColor: '#fff1f2' },
+  statusRejectedText: { color: palette.red },
+  reviewRow: {
+    flexDirection: 'row',
+    gap: s(8),
+    paddingHorizontal: s(12),
+    paddingBottom: s(11),
+  },
+  reviewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(5),
+    paddingVertical: s(6),
+    paddingHorizontal: s(12),
+    borderRadius: radius.md,
+  },
+  reviewApprove: { backgroundColor: palette.goldSoft },
+  reviewApproveText: font(10, '800', { color: palette.navy }),
+  reviewReject: { backgroundColor: '#fff1f2' },
+  reviewRejectText: font(10, '800', { color: palette.red }),
 
   footerBlock: {
     paddingTop: s(14),

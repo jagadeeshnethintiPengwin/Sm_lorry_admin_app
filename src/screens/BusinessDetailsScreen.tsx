@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
@@ -8,7 +8,6 @@ import {
   Button,
   Card,
   Content,
-  Field,
   Footer,
   Icon,
   ImageSourceSheet,
@@ -16,6 +15,8 @@ import {
   Screen,
   Select,
 } from '@components/index';
+import { useApi } from '@hooks/useApi';
+import { authService } from '@services/auth.service';
 import { gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -42,20 +43,63 @@ const STATES = [
 export const BusinessDetailsScreen: React.FC = () => {
   const navigation = useNavigation();
 
-  const [company, setCompany] = useState('SMT Simhadri Transport Pvt Ltd');
+  /*
+   * The signed-in business's real profile, not the mock's.
+   *
+   * Every field on this screen was a hardcoded default — "SMT Simhadri
+   * Transport Pvt Ltd", GSTIN "36AABCS1234H1Z5", "care@smtsimhadri.com" — so it
+   * showed the same invented company to every owner. `GET /owner/profile`
+   * returns the account and a nested `company` object; the fields are filled
+   * from it once it loads.
+   */
+  const profile = useApi(() => authService.getProfile(), []);
+
+  const [company, setCompany] = useState('');
   const [type, setType] = useState('transport');
-  const [year, setYear] = useState('2010');
-  const [pan, setPan] = useState('AABCS1234H');
-  const [cin, setCin] = useState('U60232TG2010PTC123456');
-  const [address, setAddress] = useState(
-    'Plot 42, Industrial Estate, Gachibowli, Hyderabad',
-  );
-  const [city, setCity] = useState('Hyderabad');
-  const [pin, setPin] = useState('500032');
+  const [year, setYear] = useState('');
+  const [gstin, setGstin] = useState('');
+  const [pan, setPan] = useState('');
+  const [cin, setCin] = useState('');
+  const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
+  const [pin, setPin] = useState('');
   const [state, setState] = useState('TS');
-  const [supportMobile, setSupportMobile] = useState('+91 40 4000 8888');
-  const [supportEmail, setSupportEmail] = useState('care@smtsimhadri.com');
+  const [supportMobile, setSupportMobile] = useState('');
+  const [supportEmail, setSupportEmail] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  useEffect(() => {
+    const p = profile.data as
+      | {
+          mobile?: string;
+          email?: string;
+          company?: {
+            name?: string;
+            gstin?: string;
+            address?: string;
+            city?: string;
+            state?: string;
+            mobile?: string;
+            email?: string;
+          } | null;
+        }
+      | null;
+    if (!p) {
+      return;
+    }
+    const c = p.company ?? {};
+    setCompany(c.name ?? '');
+    setGstin(c.gstin ?? '');
+    setAddress(c.address ?? '');
+    setCity(c.city ?? '');
+    // Only adopt a state the picker actually offers; the live value is a free
+    // string that may be blank or a full name.
+    if (c.state && (c.state === 'TS' || c.state === 'AP')) {
+      setState(c.state);
+    }
+    setSupportMobile(c.mobile ?? p.mobile ?? '');
+    setSupportEmail(c.email ?? p.email ?? '');
+  }, [profile.data]);
 
   const closePicker = useCallback(() => setPickerOpen(false), []);
 
@@ -133,16 +177,15 @@ export const BusinessDetailsScreen: React.FC = () => {
           TAX &amp; REGISTRATION
         </Text>
         <Card padding={12}>
-          <Field
+          <Input
             label="GSTIN"
-            labelNote="· verified"
-            labelNoteColor={palette.gold}
-            value="36AABCS1234H1Z5"
-            icon="badge-check"
-            iconColor={palette.gold}
-            variant="tinted"
-            valueStyle={styles.gstin}
+            value={gstin}
+            onChangeText={setGstin}
+            autoCapitalize="characters"
+            maxLength={15}
+            placeholder="15-character GSTIN"
             marginBottom={10}
+            inputStyle={styles.gstin}
           />
           <Input
             label="PAN Number"

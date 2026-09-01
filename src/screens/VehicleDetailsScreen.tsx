@@ -1,7 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   Pressable,
   StyleSheet,
@@ -18,6 +17,7 @@ import {
   BlinkDot,
   Button,
   Card,
+  ConfirmDialog,
   Content,
   Footer,
   Icon,
@@ -32,6 +32,7 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
+import type { ConfirmTone } from '@components/modals/ConfirmDialog';
 import type { RootStackParamList } from '@navigation/types';
 import { tripService, vehicleService } from '@services/fleet.service';
 import type { AdminVehicle } from '@services/fleet.service';
@@ -85,6 +86,17 @@ type DocRow = {
   color: string;
   /** Whether a scan is stored, as opposed to only an expiry being recorded. */
   hasFile: boolean;
+};
+
+/** A pending decision or outcome shown by the dialog at the foot of the screen. */
+type Dialog = {
+  tone: ConfirmTone;
+  icon: IconName;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  onConfirm: () => void;
 };
 
 /**
@@ -251,6 +263,8 @@ export const VehicleDetailsScreen: React.FC = () => {
   );
 
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const closeDialog = useCallback(() => setDialog(null), []);
 
   /** Adding a new scan is still a separate action from reading one. */
   const uploadDocument = useCallback(
@@ -280,14 +294,24 @@ export const VehicleDetailsScreen: React.FC = () => {
        * and the useful next step is offered in the same breath.
        */
       if (!hasFile) {
-        Alert.alert(
-          name,
-          'No scan has been filed against this document yet.',
-          [
-            { text: 'Close', style: 'cancel' },
-            { text: 'Upload one', onPress: uploadDocument },
-          ],
-        );
+        /*
+         * View only views.
+         *
+         * This used to offer "Upload one", which navigated straight to the
+         * upload screen — so pressing the *view* eye led to *uploading*, which
+         * is a different action with its own button (the pencil beside it).
+         * It now just says there is nothing to read and points at that button,
+         * so the eye never leaves this screen.
+         */
+        setDialog({
+          tone: 'gold',
+          icon: 'file-text',
+          title: name,
+          message:
+            'No scan has been filed against this document yet. Use the edit (pencil) button on this row to upload one.',
+          confirmLabel: 'Got it',
+          onConfirm: () => setDialog(null),
+        });
         return;
       }
 
@@ -295,12 +319,17 @@ export const VehicleDetailsScreen: React.FC = () => {
       try {
         await openExternalUrl(await vehicleService.documentUrl(id));
       } catch (failure) {
-        Alert.alert(
-          'Could not open it',
-          failure instanceof Error
-            ? failure.message
-            : 'That document is not available.',
-        );
+        setDialog({
+          tone: 'danger',
+          icon: 'alert-circle',
+          title: 'Could not open it',
+          message:
+            failure instanceof Error
+              ? failure.message
+              : 'That document is not available.',
+          confirmLabel: 'Close',
+          onConfirm: () => setDialog(null),
+        });
       } finally {
         setOpeningDoc(null);
       }
@@ -642,6 +671,18 @@ export const VehicleDetailsScreen: React.FC = () => {
           onPress={editVehicle}
         />
       </Footer>
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        tone={dialog?.tone}
+        icon={dialog?.icon}
+        title={dialog?.title ?? ''}
+        message={dialog?.message}
+        confirmLabel={dialog?.confirmLabel}
+        cancelLabel={dialog?.cancelLabel}
+        onConfirm={() => dialog?.onConfirm()}
+        onCancel={closeDialog}
+      />
     </Screen>
   );
 };

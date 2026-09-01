@@ -160,7 +160,9 @@ function toGroups(documents: AdminDocument[]): TripGroup[] {
 const TABS: Array<[Tab, string, boolean]> = [
   ['transit', 'In Transit', false],
   ['delivered', 'Delivered', false],
-  ['incomplete', 'Incomplete 8', true],
+  // The count is appended live in the render — it was a fixed "8" that never
+  // reflected how many groups are actually incomplete.
+  ['incomplete', 'Incomplete', true],
 ];
 
 export const DocumentsScreen: React.FC = () => {
@@ -270,6 +272,13 @@ export const DocumentsScreen: React.FC = () => {
       <View style={styles.tabs}>
         {TABS.map(([key, label, gold]) => {
           const on = tab === key;
+          // The live count of incomplete groups, appended to that tab only.
+          const count =
+            key === 'incomplete'
+              ? groups.filter(g => g.tab === 'incomplete').length
+              : 0;
+          const shown =
+            key === 'incomplete' && count > 0 ? `${label} ${count}` : label;
           return (
             <Pressable
               key={key}
@@ -287,7 +296,7 @@ export const DocumentsScreen: React.FC = () => {
                     : styles.tabText
                 }
               >
-                {label}
+                {shown}
               </Text>
             </Pressable>
           );

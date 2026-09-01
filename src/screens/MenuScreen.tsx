@@ -13,6 +13,9 @@ import {
   TwinkleDot,
 } from '@components/index';
 import { useTopInset } from '@hooks/useTopInset';
+import { useApi } from '@hooks/useApi';
+import { useAppSelector } from '@store/index';
+import { reportService } from '@services/report.service';
 import { gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -45,11 +48,31 @@ export const MenuScreen: React.FC = () => {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const topInset = useTopInset();
 
+  /* Who is signed in, and the same fleet counts the dashboard is built from —
+     everything on this screen used to be invented (42 vehicles, 124 customers,
+     "+91 98980 XXXXX"). */
+  const profile = useAppSelector(state => state.auth.profile);
+  const summary = useApi(() => reportService.dashboard(), []);
+  const d = summary.data;
+
+  const name = profile?.name ?? 'Admin';
+  const mobile = profile?.mobile ?? '';
+  const initials =
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || 'AD';
+  // `role` rides on the signed-in payload but is not on the profile type.
+  const role = (profile as { role?: string } | null)?.role;
+  const roleLabel = role && role !== 'OWNER' ? role.replace(/_/g, ' ') : 'FLEET OWNER';
+
   const management: MenuRow[] = [
     {
       id: 'vehicles',
       title: 'Vehicles',
-      meta: '42 fleet · 14 available',
+      meta: d ? `${d.totalVehicles} fleet · ${d.fleet.available} available` : 'View the fleet',
       icon: 'truck',
       bg: palette.navyTint,
       color: palette.navy,
@@ -58,7 +81,7 @@ export const MenuScreen: React.FC = () => {
     {
       id: 'drivers',
       title: 'Drivers',
-      meta: '38 drivers · 32 online',
+      meta: d ? `${d.totalDrivers} drivers · ${d.drivers.online} online` : 'View the roster',
       icon: 'user-cog',
       bg: palette.goldTint,
       color: palette.gold,
@@ -67,7 +90,9 @@ export const MenuScreen: React.FC = () => {
     {
       id: 'customers',
       title: 'Customers',
-      meta: '124 accounts · +8 mo',
+      meta: d
+        ? `${d.totalCustomers} ${d.totalCustomers === 1 ? 'account' : 'accounts'}`
+        : 'View customers',
       icon: 'users',
       bg: palette.redTint,
       color: palette.red,
@@ -79,7 +104,9 @@ export const MenuScreen: React.FC = () => {
       // otherwise only reachable through "See all" links on the dashboard.
       id: 'trips',
       title: 'Trips',
-      meta: '18 in transit · 1,302 total',
+      meta: d
+        ? `${d.activeTrips} in transit · ${d.completedTrips} completed`
+        : 'View trips',
       // The admin icon set has no `route`; `navigation` is the closest match
       // and is already the app's tracking glyph.
       icon: 'navigation',
@@ -90,7 +117,9 @@ export const MenuScreen: React.FC = () => {
     {
       id: 'documents',
       title: 'Documents',
-      meta: '4,322 files · 32 GB',
+      // No count in the dashboard summary, so a description rather than an
+      // invented "4,322 files · 32 GB".
+      meta: 'Trip & vehicle paperwork',
       icon: 'folder-archive',
       bg: palette.navyTint,
       color: palette.navy,
@@ -107,11 +136,14 @@ export const MenuScreen: React.FC = () => {
     },
   ];
 
+  const gstin = (profile as { gstin?: string } | null)?.gstin;
+
   const account: MenuRow[] = [
     {
       id: 'business',
       title: 'Business Details',
-      meta: 'Company info · GSTIN',
+      // The real GSTIN when it is on file, rather than the fixed label.
+      meta: gstin ? `GSTIN ${gstin}` : 'Company profile & GSTIN',
       icon: 'building-2',
       bg: palette.navyTint,
       color: palette.navy,
@@ -119,18 +151,20 @@ export const MenuScreen: React.FC = () => {
     },
     {
       id: 'security',
-      title: 'Security & PIN',
-      meta: '2FA enabled',
+      title: 'Security',
+      // Honest: this app signs in with an email and password, like the web
+      // panel — there is no PIN and no two-factor, so "2FA enabled" was a
+      // claim the app could not back up.
+      meta: 'Email & password sign-in',
       icon: 'shield',
       bg: palette.navyTint,
       color: palette.navy,
-      pill: '2FA',
       go: () => undefined,
     },
     {
       id: 'support',
       title: 'Support & Help',
-      meta: 'Priority · Owner desk',
+      meta: 'Contact SMT support',
       icon: 'headphones',
       bg: palette.goldTint,
       color: palette.gold,
@@ -229,16 +263,20 @@ export const MenuScreen: React.FC = () => {
                 style={styles.avatarRing}
               />
               <View style={styles.avatar}>
-                <Text style={styles.avatarText}>AD</Text>
+                <Text style={styles.avatarText}>{initials}</Text>
               </View>
             </View>
 
             <View style={styles.heroBody}>
-              <Text style={styles.heroName}>Admin (Owner)</Text>
-              <Text style={styles.heroPhone}>+91 98980 XXXXX</Text>
+              <Text style={styles.heroName} numberOfLines={1}>
+                {name}
+              </Text>
+              <Text style={styles.heroPhone}>
+                {mobile || 'No number on file'}
+              </Text>
               <View style={styles.crownChip}>
                 <Icon name="crown" size={10} color={palette.navy} />
-                <Text style={styles.crownText}>FLEET OWNER</Text>
+                <Text style={styles.crownText}>{roleLabel}</Text>
               </View>
             </View>
           </View>
@@ -248,15 +286,15 @@ export const MenuScreen: React.FC = () => {
         <View style={styles.statsWrap}>
           <View style={styles.statsCard}>
             <View style={[styles.stat, styles.statDivider]}>
-              <Text style={styles.statValue}>42</Text>
+              <Text style={styles.statValue}>{d ? d.totalVehicles : '—'}</Text>
               <Text style={styles.statLabel}>VEHICLES</Text>
             </View>
             <View style={[styles.stat, styles.statDivider]}>
-              <Text style={styles.statValue}>38</Text>
+              <Text style={styles.statValue}>{d ? d.totalDrivers : '—'}</Text>
               <Text style={styles.statLabel}>DRIVERS</Text>
             </View>
             <View style={styles.stat}>
-              <Text style={styles.statValue}>124</Text>
+              <Text style={styles.statValue}>{d ? d.totalCustomers : '—'}</Text>
               <Text style={styles.statLabel}>CUSTOMERS</Text>
             </View>
           </View>

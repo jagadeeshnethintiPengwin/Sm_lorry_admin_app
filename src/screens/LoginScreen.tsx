@@ -1,10 +1,13 @@
 import React, { useCallback, useState } from 'react';
 import { Image, StyleSheet, Text, TextInput, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { Button, Icon, Screen } from '@components/index';
 import { useAppDispatch } from '@store/index';
 import { login } from '@store/slices/auth.slice';
+import type { RootStackParamList } from '@navigation/types';
 import { useTopInset } from '@hooks/useTopInset';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { alpha, gradients, palette } from '@theme/colors';
@@ -24,6 +27,8 @@ import { s } from '@theme/metrics';
 export const LoginScreen: React.FC = () => {
   const topInset = useTopInset();
   const dispatch = useAppDispatch();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -40,15 +45,29 @@ export const LoginScreen: React.FC = () => {
     setFailure(null);
     try {
       await dispatch(login({ email: email.trim(), password })).unwrap();
+      /*
+       * Move to the app.
+       *
+       * The root stack does not watch `isAuthenticated` — it is a plain stack
+       * fixed on `Auth`, and nothing anywhere reads that flag to navigate — so
+       * a successful sign-in has to leave the auth flow by hand, the same way
+       * the OTP screen and Splash already do. `reset`, like Splash on resume,
+       * so the login stack is not left behind the dashboard for the back
+       * gesture to reach.
+       *
+       * Without this the sign-in *worked* — a 201, the token stored, push
+       * registered — and the screen simply sat there, so it read as "unable to
+       * log in" when the only thing missing was the step onto the dashboard.
+       */
+      navigation.reset({ index: 0, routes: [{ name: 'Tabs' }] });
     } catch (error) {
       setFailure(
         (error as Error)?.message ||
           'Could not sign in. Check your connection and try again.',
       );
-    } finally {
       setBusy(false);
     }
-  }, [busy, canSubmit, dispatch, email, password]);
+  }, [busy, canSubmit, dispatch, email, navigation, password]);
 
   return (
     <Screen backgroundColor={palette.navy}>

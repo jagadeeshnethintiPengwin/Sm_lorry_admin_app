@@ -15,6 +15,9 @@ import {
   TwinkleDot,
 } from '@components/index';
 import { useTopInset } from '@hooks/useTopInset';
+import { useApi } from '@hooks/useApi';
+import { useAppSelector } from '@store/index';
+import { authService } from '@services/auth.service';
 import { onLiveNotification } from '@services/realtime';
 import { reportService } from '@services/report.service';
 import {
@@ -188,6 +191,24 @@ export const DashboardScreen: React.FC = () => {
   const [live, setLive] = useState<LiveTrip[]>([]);
   const [unread, setUnread] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
+
+  /*
+   * Who is signed in, for the greeting — it read "Admin (Owner)" / "SMT
+   * Simhadri Transport" / "AD" to everyone. Name and initials come from the
+   * session in redux (instant); the company name from `/owner/profile`.
+   */
+  const account = useAppSelector(state => state.auth.profile);
+  const owner = useApi(() => authService.getProfile(), []);
+  const greetName = account?.name ?? 'Admin';
+  const greetInitials =
+    greetName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || 'AD';
+  const greetOrg =
+    (owner.data as { company?: { name?: string } } | null)?.company?.name ?? '';
 
   /**
    * Re-read on every visit.
@@ -380,14 +401,20 @@ export const DashboardScreen: React.FC = () => {
               style={styles.avatarRing}
             />
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>AD</Text>
+              <Text style={styles.avatarText}>{greetInitials}</Text>
             </View>
           </View>
 
           <View style={styles.greetBlock}>
             <Text style={styles.greetSmall}>Namaste,</Text>
-            <Text style={styles.greetName}>Admin (Owner)</Text>
-            <Text style={styles.greetOrg}>SMT Simhadri Transport</Text>
+            <Text style={styles.greetName} numberOfLines={1}>
+              {greetName}
+            </Text>
+            {greetOrg ? (
+              <Text style={styles.greetOrg} numberOfLines={1}>
+                {greetOrg}
+              </Text>
+            ) : null}
           </View>
 
           <Pressable

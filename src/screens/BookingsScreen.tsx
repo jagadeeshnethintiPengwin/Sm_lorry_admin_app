@@ -19,6 +19,10 @@ import {
   AppHeader,
   BlinkDot,
   Content,
+  DateFilter,
+  ALL_TIME,
+  dateRangeParams,
+  type DateRange,
   Icon,
   RouteView,
   Screen,
@@ -184,6 +188,7 @@ export const BookingsScreen: React.FC = () => {
       setTab(requestedTab);
     }
   }, [requestedTab]);
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<string | null>(null);
@@ -200,13 +205,15 @@ export const BookingsScreen: React.FC = () => {
   const load = useCallback(async () => {
     setFailure(null);
     try {
-      setBookings(await bookingService.list({ limit: 100 }));
+      setBookings(
+        await bookingService.list({ limit: 100, ...dateRangeParams(range) }),
+      );
     } catch (error) {
       setFailure((error as Error).message || 'Could not load bookings.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [range]);
 
   useFocusEffect(
     useCallback(() => {
@@ -312,6 +319,8 @@ export const BookingsScreen: React.FC = () => {
           );
         })}
       </View>
+
+      <DateFilter range={range} onChange={setRange} label="Booked" />
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
         {/*

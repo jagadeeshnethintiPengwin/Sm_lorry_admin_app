@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -116,6 +116,25 @@ export const CustomerDetailsScreen: React.FC = () => {
   const newBooking = useCallback(
     () => navigation.navigate('Tabs', { screen: 'Bookings' }),
     [navigation],
+  );
+
+  /*
+   * The office's KYC verdict. A customer who signed up in the app arrives
+   * unverified, and a trip cannot be assigned to their booking until this is
+   * set — the same gate the web panel enforces, driven from here on the phone.
+   */
+  const [verifying, setVerifying] = useState(false);
+  const verifyAccount = useCallback(
+    async (next: boolean) => {
+      setVerifying(true);
+      try {
+        await customerService.verify(customerId, next);
+        await refetch();
+      } finally {
+        setVerifying(false);
+      }
+    },
+    [customerId, refetch],
   );
 
   return (
@@ -387,6 +406,27 @@ export const CustomerDetailsScreen: React.FC = () => {
           )}
         </View>
 
+        {!verified ? (
+          <View style={styles.verifyBlock}>
+            <View style={styles.verifyBanner}>
+              <Icon name="alert-triangle" size={16} color="#8a5a00" />
+              <Text style={styles.verifyBannerText}>
+                Unverified account — signed up from the app. Check the GST and
+                address, then verify it so trips can be assigned to their
+                bookings.
+              </Text>
+            </View>
+            <Button
+              label={verifying ? 'Verifying…' : 'Verify account'}
+              variant="gold"
+              icon="shield-check"
+              loading={verifying}
+              disabled={verifying}
+              onPress={() => verifyAccount(true)}
+            />
+          </View>
+        ) : null}
+
         <View style={styles.actions}>
           <Button
             label="Edit"
@@ -587,6 +627,23 @@ const styles = StyleSheet.create({
   },
   pillGoldText: font(8, '800', { color: palette.goldText }),
 
+  verifyBlock: {
+    gap: s(10),
+    paddingTop: s(14),
+    paddingHorizontal: s(12),
+  },
+  verifyBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: s(8),
+    padding: s(11),
+    borderRadius: radius.md,
+    backgroundColor: '#fff7e0',
+  },
+  verifyBannerText: {
+    ...font(11, '600', { color: '#8a5a00', lineHeight: 1.4 }),
+    flex: 1,
+  },
   actions: {
     flexDirection: 'row',
     gap: s(8),

@@ -198,7 +198,7 @@ export const SplashScreen: React.FC = () => {
             <Text style={styles.crownText}>OWNER · ADMIN</Text>
           </View>
           <Text style={styles.tagline}>Manage Your Fleet</Text>
-          <Text style={styles.subTagline}>Trusted by 2,400+ drivers</Text>
+          <Text style={styles.subTagline}>SMT Simhadri Transport</Text>
         </View>
 
         {/* Loading */}

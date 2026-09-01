@@ -27,7 +27,13 @@ react {
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
-    // nodeExecutableAndArgs = ["node"]
+    //   Use an absolute node path when one exists (so a Dock-launched Android
+    //   Studio, whose PATH lacks Homebrew/nvm, can still run codegen/bundling);
+    //   otherwise fall back to bare 'node' so other machines and CI are unaffected.
+    nodeExecutableAndArgs = [
+        ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"]
+            .find { new File(it).exists() } ?: "node"
+    ]
     //
     //   The command to run when bundling. By default is 'bundle'
     // bundleCommand = "ram-bundle"
@@ -105,15 +111,21 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+          release {
+            storeFile file('smlorry.jks')
+            storePassword '123456'
+            keyAlias 'smlorry'
+            keyPassword '123456'
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Signed with the real release key (app/smlorry.jks) so `bundleRelease`
+            // produces a publishable, release-signed AAB.
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }

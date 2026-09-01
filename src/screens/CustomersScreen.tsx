@@ -8,6 +8,10 @@ import {
   AppHeader,
   Card,
   Content,
+  DateFilter,
+  ALL_TIME,
+  dateRangeParams,
+  type DateRange,
   Icon,
   ListState,
   Screen,
@@ -102,10 +106,11 @@ export const CustomersScreen: React.FC = () => {
 
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('recent');
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
 
   const { data, loading, error, refetch } = useApi(
-    () => customerService.page({ limit: 100 }),
-    [],
+    () => customerService.page({ limit: 100, ...dateRangeParams(range) }),
+    [range.from, range.to],
   );
 
   const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
@@ -172,6 +177,8 @@ export const CustomersScreen: React.FC = () => {
           style={styles.sortControl}
         />
       </View>
+
+      <DateFilter range={range} onChange={setRange} label="Added" />
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
         <ListState

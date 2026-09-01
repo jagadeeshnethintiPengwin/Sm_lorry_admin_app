@@ -51,6 +51,15 @@ export function openNotificationLink(link: string | null | undefined): boolean {
     case 'VehicleDetails':
       navigationRef.navigate('VehicleDetails', target.params);
       return true;
+    case 'DriverDetails':
+      navigationRef.navigate('DriverDetails', target.params);
+      return true;
+    case 'CustomerDetails':
+      navigationRef.navigate('CustomerDetails', target.params);
+      return true;
+    case 'LiveTripTrack':
+      navigationRef.navigate('LiveTripTrack', target.params);
+      return true;
     case 'PodViewer':
       navigationRef.navigate('PodViewer', target.params);
       return true;

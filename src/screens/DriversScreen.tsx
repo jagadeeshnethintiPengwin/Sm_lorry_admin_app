@@ -10,6 +10,10 @@ import {
   Card,
   AssignVehicleDialog,
   Content,
+  DateFilter,
+  ALL_TIME,
+  dateRangeParams,
+  type DateRange,
   Icon,
   ListState,
   Screen,
@@ -112,10 +116,11 @@ export const DriversScreen: React.FC = () => {
 
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('online');
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
 
   const { data, loading, error, refetch } = useApi(
-    () => driverService.page({ limit: 100 }),
-    [],
+    () => driverService.page({ limit: 100, ...dateRangeParams(range) }),
+    [range.from, range.to],
   );
 
   const rows = useMemo(() => (data?.items ?? []).map(toRow), [data]);
@@ -244,6 +249,8 @@ export const DriversScreen: React.FC = () => {
           </Pressable>
         ))}
       </View>
+
+      <DateFilter range={range} onChange={setRange} label="Joined" />
 
       <Content padding={12} contentStyle={styles.contentTop} safeBottom>
         <ListState

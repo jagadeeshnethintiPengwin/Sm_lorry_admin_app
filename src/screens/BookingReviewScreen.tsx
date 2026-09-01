@@ -99,12 +99,39 @@ function formatSize(bytes: number): string {
     : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-const PACKAGE = [
-  { label: 'MATERIAL', value: 'Steel Pipes' },
-  { label: 'WEIGHT', value: '12.5 Ton' },
-  { label: 'UNITS', value: '25 Bundles' },
-  { label: 'PACKAGE', value: 'Bundles' },
-];
+/** `2026-09-01T…` -> `01 Sep 2026`, and anything unparseable -> `—`. */
+function formatDate(iso?: unknown): string {
+  if (typeof iso !== 'string' || !iso) {
+    return '—';
+  }
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) {
+    return '—';
+  }
+  return when.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+/**
+ * How the hero chip reads for each booking state.
+ *
+ * The chip was a fixed gold "PENDING" on every booking — right for the one
+ * this screen usually opens, wrong the moment an already-approved or rejected
+ * booking is viewed. Colours are chosen to read on the navy hero.
+ */
+const STATUS_CHIP: Record<
+  string,
+  { label: string; tint: string; text: string; blink: boolean }
+> = {
+  PENDING: { label: 'PENDING', tint: 'rgba(245,166,35,0.20)', text: palette.gold, blink: true },
+  APPROVED: { label: 'APPROVED', tint: 'rgba(22,163,74,0.20)', text: '#4ade80', blink: false },
+  COMPLETED: { label: 'COMPLETED', tint: 'rgba(22,163,74,0.20)', text: '#4ade80', blink: false },
+  REJECTED: { label: 'REJECTED', tint: 'rgba(220,38,38,0.22)', text: '#fca5a5', blink: false },
+  CANCELLED: { label: 'CANCELLED', tint: 'rgba(255,255,255,0.14)', text: palette.white, blink: false },
+};
 
 export const BookingReviewScreen: React.FC = () => {
   const navigation =
@@ -437,11 +464,68 @@ export const BookingReviewScreen: React.FC = () => {
     });
   }, [bookingId, closeDialog, finish]);
 
+  /*
+   * The booking's own details, for the hero, locations and package grid — every
+   * one of which was fixed text before ("#ST-2026-8842", Kompally → Vijayawada,
+   * "Steel Pipes / 12.5 Ton / 25 Bundles"), shown on every booking regardless
+   * of what was actually booked. All of it has been on the record since the
+   * screen was written; it simply was not read.
+   */
+  const b = (booking.data ?? {}) as Record<string, any>;
+  const reference = b.reference ? `#${b.reference}` : '#—';
+  const status = String(b.status ?? 'PENDING').toUpperCase();
+  const chip = STATUS_CHIP[status] ?? STATUS_CHIP.PENDING;
+  const pickupPlace: string = b.pickupPlace || '—';
+  const dropPlace: string = b.dropPlace || '—';
+  const heroMeta = [
+    b.distanceKm ? `${b.distanceKm} km` : null,
+    b.vehicleType || null,
+    b.pickupAt
+      ? `${formatDate(b.pickupAt)}${b.timeSlot ? `, ${b.timeSlot}` : ''}`
+      : null,
+  ].filter(Boolean) as string[];
+  const packageCells = [
+    { label: 'MATERIAL', value: b.material || '—' },
+    { label: 'WEIGHT', value: b.weightTons ? `${b.weightTons} Ton` : '—' },
+    { label: 'UNITS', value: b.units ? String(b.units) : '—' },
+    { label: 'PACKAGE TYPE', value: b.packageType || '—' },
+    { label: 'EXPECTED DELIVERY', value: formatDate(b.expectedAt) },
+    { label: 'TIME SLOT', value: b.timeSlot || '—' },
+  ];
+
+  /*
+   * A booking is only assignable while it is pending. Once it is approved it
+   * has a trip, and the pickers give way to what was actually assigned — the
+   * screen was showing "Assign vehicle / Assign driver" on a booking that had
+   * a lorry and a driver on the road, inviting a second dispatch of a job
+   * already out. `trip` carries both, joined by the API.
+   */
+  const isPending = status === 'PENDING';
+  const trip = (b.trip ?? null) as Record<string, any> | null;
+  const assignedVehicle = (trip?.vehicle ?? null) as Record<string, any> | null;
+  const assignedDriver = (trip?.driver ?? null) as Record<string, any> | null;
+  const assignedDriverName: string =
+    (assignedDriver?.user as { name?: string } | undefined)?.name ?? 'Driver';
+  const assignedDriverMobile: string =
+    (assignedDriver?.user as { mobile?: string } | undefined)?.mobile ?? '';
+  const assignedDriverInitials =
+    assignedDriverName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || '—';
+  const callAssignedDriver = () => {
+    if (assignedDriverMobile) {
+      Linking.openURL(`tel:${assignedDriverMobile}`).catch(() => undefined);
+    }
+  };
+
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Review Booking"
-        subtitle="#ST-2026-8842"
+        subtitle={reference}
         showBack
         onBackPress={navigation.goBack}
       />
@@ -464,26 +548,42 @@ export const BookingReviewScreen: React.FC = () => {
 
           <View style={styles.heroBody}>
             <View style={styles.heroHead}>
-              <Text style={styles.heroRef}>#ST-2026-8842</Text>
-              <View style={styles.heroChip}>
-                <BlinkDot color={palette.gold} size={5} />
-                <Text style={styles.heroChipText}>PENDING</Text>
+              <Text style={styles.heroRef}>{reference}</Text>
+              <View
+                style={[
+                  styles.heroChip,
+                  { backgroundColor: chip.tint, borderColor: chip.tint },
+                ]}
+              >
+                {chip.blink ? <BlinkDot color={chip.text} size={5} /> : null}
+                <Text style={[styles.heroChipText, { color: chip.text }]}>
+                  {chip.label}
+                </Text>
               </View>
             </View>
 
             <View style={styles.heroRoute}>
-              <Text style={styles.heroCity}>Kompally</Text>
+              <Text style={styles.heroCity} numberOfLines={1}>
+                {pickupPlace}
+              </Text>
               <Icon name="arrow-right" size={14} color={palette.gold} />
-              <Text style={styles.heroCity}>Vijayawada</Text>
+              <Text style={styles.heroCity} numberOfLines={1}>
+                {dropPlace}
+              </Text>
             </View>
 
-            <View style={styles.heroMeta}>
-              <Text style={styles.heroMetaText}>278 km</Text>
-              <Text style={styles.heroMetaDivider}>|</Text>
-              <Text style={styles.heroMetaText}>14 Ft Truck</Text>
-              <Text style={styles.heroMetaDivider}>|</Text>
-              <Text style={styles.heroMetaText}>Today 4 PM</Text>
-            </View>
+            {heroMeta.length ? (
+              <View style={styles.heroMeta}>
+                {heroMeta.map((part, i) => (
+                  <React.Fragment key={part}>
+                    {i > 0 ? (
+                      <Text style={styles.heroMetaDivider}>|</Text>
+                    ) : null}
+                    <Text style={styles.heroMetaText}>{part}</Text>
+                  </React.Fragment>
+                ))}
+              </View>
+            ) : null}
           </View>
         </LinearGradient>
 
@@ -547,8 +647,8 @@ export const BookingReviewScreen: React.FC = () => {
             />
             <View style={styles.locBody}>
               <Text style={styles.locLabel}>LOADING AREA</Text>
-              <Text style={styles.locName}>Kompally Industrial Estate</Text>
-              <Text style={styles.locAddress}>Plot 42, Hyderabad - 500014</Text>
+              <Text style={styles.locName}>{pickupPlace}</Text>
+              <Text style={styles.locAddress}>{b.pickupAddress || '—'}</Text>
             </View>
           </View>
 
@@ -563,8 +663,8 @@ export const BookingReviewScreen: React.FC = () => {
             />
             <View style={styles.locBody}>
               <Text style={styles.locLabel}>UNLOADING AREA</Text>
-              <Text style={styles.locName}>Sri Krishna Warehouse</Text>
-              <Text style={styles.locAddress}>MG Road, Vijayawada - 520001</Text>
+              <Text style={styles.locName}>{dropPlace}</Text>
+              <Text style={styles.locAddress}>{b.dropAddress || '—'}</Text>
             </View>
           </View>
         </Card>
@@ -573,7 +673,7 @@ export const BookingReviewScreen: React.FC = () => {
         <Text style={[styles.section, styles.sectionGap]}>PACKAGE</Text>
         <Card padding={12}>
           <View style={styles.pkgGrid}>
-            {PACKAGE.map(item => (
+            {packageCells.map(item => (
               <View key={item.label} style={styles.pkgCell}>
                 <Text style={styles.pkgLabel}>{item.label}</Text>
                 <Text style={styles.pkgValue}>{item.value}</Text>
@@ -642,6 +742,8 @@ export const BookingReviewScreen: React.FC = () => {
           </View>
         )}
 
+        {isPending ? (
+        <>
         {/* Assign vehicle */}
         <Text style={styles.section}>ASSIGN VEHICLE</Text>
         <Card padding={11}>
@@ -769,38 +871,148 @@ export const BookingReviewScreen: React.FC = () => {
             </View>
           ) : null}
         </Card>
+        </>
+        ) : (
+        <>
+        {/* Assigned once the booking is approved — read-only, not a picker. */}
+        <Text style={styles.section}>ASSIGNED VEHICLE &amp; DRIVER</Text>
+        <Card padding={11} marginBottom={0}>
+          {assignedVehicle ? (
+            <View style={styles.matchGold}>
+              <IconWell
+                icon="truck"
+                size={38}
+                iconSize={20}
+                backgroundColor={palette.white}
+                color={palette.gold}
+                borderRadius={radius.lg}
+              />
+              <View style={styles.matchBody}>
+                <Text style={styles.matchTitle}>
+                  {String(assignedVehicle.registration ?? '—')}
+                </Text>
+                <Text style={styles.matchMetaGold}>
+                  {[
+                    assignedVehicle.type,
+                    assignedVehicle.capacity,
+                    [assignedVehicle.make, assignedVehicle.model]
+                      .filter(Boolean)
+                      .join(' '),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ') || '—'}
+                </Text>
+              </View>
+              <Icon name="check" size={16} color={palette.gold} />
+            </View>
+          ) : null}
+
+          {assignedDriver ? (
+            <View
+              style={[
+                styles.matchNavy,
+                assignedVehicle ? { marginTop: s(10) } : null,
+              ]}
+            >
+              <View>
+                <View style={styles.driverAvatar}>
+                  <Text style={styles.driverInitials}>
+                    {assignedDriverInitials}
+                  </Text>
+                </View>
+                <View style={styles.presence} />
+              </View>
+
+              <View style={styles.matchBody}>
+                <Text style={styles.matchTitle}>{assignedDriverName}</Text>
+                <Text style={styles.matchMeta} numberOfLines={1}>
+                  {assignedDriverMobile || 'No number on file'}
+                </Text>
+              </View>
+
+              <Pressable
+                onPress={callAssignedDriver}
+                disabled={!assignedDriverMobile}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  assignedDriverMobile
+                    ? `Call ${assignedDriverName}`
+                    : 'No number on file'
+                }
+                style={({ pressed }) => [
+                  styles.callBtn,
+                  !assignedDriverMobile && styles.callBtnOff,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Icon name="phone" size={14} color={palette.navy} />
+              </Pressable>
+            </View>
+          ) : null}
+
+          {!assignedVehicle && !assignedDriver ? (
+            <View style={styles.docEmpty}>
+              <Icon name="truck" size={14} color={palette.slate400} />
+              <Text style={styles.docEmptyText}>
+                {status === 'REJECTED' || status === 'CANCELLED'
+                  ? `This booking was ${status.toLowerCase()} — no lorry was assigned.`
+                  : 'No lorry or driver has been assigned yet.'}
+              </Text>
+            </View>
+          ) : null}
+        </Card>
+        </>
+        )}
       </Content>
 
-      <Footer row>
-        <Button
-          label="Reject"
-          variant="outline"
-          icon="x"
-          iconSize={12}
-          flex={1}
-          padding={10}
-          fontSize={11}
-          gap={4}
-          color={palette.red}
-          borderColor={palette.redSoft}
-          disabled={busy}
-          onPress={reject}
-        />
-        <Button
-          label={busy ? 'Working…' : 'Approve & Dispatch'}
-          variant="gold"
-          icon="check-circle-2"
-          flex={1.8}
-          padding={10}
-          fontSize={10.5}
-          gap={4}
-          loading={busy}
-          // Nothing to approve with until both are chosen; the API requires
-          // a vehicleId and a driverId and refuses the request without them.
-          disabled={busy || !vehicle || !driver}
-          onPress={() => approve()}
-        />
-      </Footer>
+      {isPending ? (
+        <Footer row>
+          <Button
+            label="Reject"
+            variant="outline"
+            icon="x"
+            iconSize={12}
+            flex={1}
+            padding={10}
+            fontSize={11}
+            gap={4}
+            color={palette.red}
+            borderColor={palette.redSoft}
+            disabled={busy}
+            onPress={reject}
+          />
+          <Button
+            label={busy ? 'Working…' : 'Approve & Dispatch'}
+            variant="gold"
+            icon="check-circle-2"
+            flex={1.8}
+            padding={10}
+            fontSize={10.5}
+            gap={4}
+            loading={busy}
+            // Nothing to approve with until both are chosen; the API requires
+            // a vehicleId and a driverId and refuses the request without them.
+            disabled={busy || !vehicle || !driver}
+            onPress={() => approve()}
+          />
+        </Footer>
+      ) : trip ? (
+        /* Approved — the action is to go and watch the trip, not re-approve it. */
+        <Footer>
+          <Button
+            label="View Trip"
+            variant="gold"
+            icon="truck"
+            iconSize={14}
+            padding={12}
+            fontSize={12}
+            gap={6}
+            onPress={() =>
+              navigation.navigate('TripDetails', { tripId: String(trip.id) })
+            }
+          />
+        </Footer>
+      ) : null}
 
       <ConfirmDialog
         visible={dialog !== null}
@@ -846,7 +1058,7 @@ const styles = StyleSheet.create({
   },
   heroChipText: font(8, '800', { color: palette.gold, letterSpacing: 1 }),
   heroRoute: { flexDirection: 'row', alignItems: 'center', gap: s(8) },
-  heroCity: font(13, '800', { color: palette.white }),
+  heroCity: { ...font(13, '800', { color: palette.white }), flexShrink: 1 },
   heroMeta: {
     flexDirection: 'row',
     alignItems: 'center',

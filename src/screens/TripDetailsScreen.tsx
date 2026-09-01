@@ -1,5 +1,12 @@
-import React, { useCallback } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Linking,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -10,6 +17,7 @@ import {
   BlinkDot,
   Button,
   Card,
+  ConfirmDialog,
   Content,
   Footer,
   Icon,
@@ -23,8 +31,10 @@ import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
+import type { ConfirmTone } from '@components/modals/ConfirmDialog';
 import type { RootStackParamList } from '@navigation/types';
-import { tripService } from '@services/fleet.service';
+import { documentService, tripService, type AdminDocument } from '@services/fleet.service';
+import { openExternalUrl } from '@utils/openExternalUrl';
 import { useApi } from '@hooks/useApi';
 
 /**
@@ -35,60 +45,47 @@ import { useApi } from '@hooks/useApi';
  *   CUSTOMER card · DOCUMENTS · 5 as a 2-up grid ·
  *   Timeline / Track Live footer
  */
-type DocTile = {
-  id: string;
-  name: string;
-  size: string;
+/** A pending decision or outcome shown by the dialog at the foot of the screen. */
+type Dialog = {
+  tone: ConfirmTone;
   icon: IconName;
-  bg: string;
-  color: string;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
 };
 
-const DOCS: DocTile[] = [
-  {
-    id: 'eway',
-    name: 'E-way Bill',
-    size: '234 KB',
-    icon: 'scroll-text',
-    bg: palette.navyTint,
-    color: palette.navy,
-  },
-  {
-    id: 'invoice',
-    name: 'Invoice',
-    size: '1.1 MB',
-    icon: 'receipt',
-    bg: palette.goldTint,
-    color: palette.gold,
-  },
-  {
-    id: 'waybill',
-    name: 'Waybill',
-    size: '342 KB',
-    icon: 'file-text',
-    bg: palette.navyTint,
-    color: palette.navy,
-  },
-  {
-    id: 'lr',
-    name: 'LR',
-    size: '456 KB',
-    icon: 'file-check',
-    bg: palette.goldTint,
-    color: palette.gold,
-  },
-  {
-    // The mock labels this section "DOCUMENTS · 5" but draws four tiles. POD
-    // is the missing fifth, and it doubles as the only route into the POD
-    // Viewer screen (23), which nothing else reached.
-    id: 'pod',
-    name: 'Proof of Delivery',
-    size: '892 KB',
-    icon: 'package-check',
-    bg: palette.redTint,
-    color: palette.red,
-  },
-];
+/**
+ * How each kind of paperwork is labelled and coloured — keyed by the API's
+ * `kind`, so a document is drawn as what it actually is.
+ *
+ * The grid used to be five fixed tiles ("E-way Bill · 234 KB", "Invoice · 1.1
+ * MB", a Waybill, an LR and a POD) shown on every trip regardless of what had
+ * been filed, and only the POD tile did anything — it opened a separate viewer
+ * screen. Now each tile is a real document that opens the actual file.
+ */
+const DOC_STYLE: Record<
+  string,
+  { label: string; icon: IconName; bg: string; color: string }
+> = {
+  EWAY: { label: 'E-way Bill', icon: 'scroll-text', bg: palette.navyTint, color: palette.navy },
+  INVOICE: { label: 'Invoice', icon: 'receipt', bg: palette.goldTint, color: palette.gold },
+  WAYBILL: { label: 'Waybill', icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+  LR: { label: 'Lorry Receipt', icon: 'file-check', bg: palette.goldTint, color: palette.gold },
+  CHALLAN: { label: 'Challan', icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+  POD: { label: 'Proof of Delivery', icon: 'package-check', bg: palette.redTint, color: palette.red },
+  OTHER: { label: 'Document', icon: 'file-text', bg: palette.navyTint, color: palette.navy },
+};
+
+/** `12326` -> `12 KB`. Bytes are what the API stores; nobody reads bytes. */
+function formatSize(bytes: number): string {
+  if (!bytes) {
+    return '';
+  }
+  return bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 export const TripDetailsScreen: React.FC = () => {
   const navigation =
@@ -137,10 +134,53 @@ export const TripDetailsScreen: React.FC = () => {
     ? String(booking.dropAddress)
     : '';
 
-  /* What the booking and the trip actually carry between them. */
-  const docCount =
-    ((booking?.documents as unknown[] | undefined)?.length ?? 0) +
-    ((trip?.documents as unknown[] | undefined)?.length ?? 0);
+  /*
+   * Every document filed against this consignment — the booking's shipment
+   * scans and anything added on the trip, proof of delivery included — merged
+   * and ordered so the e-way bill and invoice come first.
+   */
+  const documents = useMemo(() => {
+    const rows = [
+      ...((booking?.documents as AdminDocument[] | undefined) ?? []),
+      ...((trip?.documents as AdminDocument[] | undefined) ?? []),
+    ];
+    const rank = (kind: string) =>
+      kind === 'EWAY' ? 0 : kind === 'INVOICE' ? 1 : 2;
+    return [...rows].sort(
+      (a, b) => rank(String(a.kind)) - rank(String(b.kind)),
+    );
+  }, [booking?.documents, trip?.documents]);
+  const docCount = documents.length;
+
+  const [openingDoc, setOpeningDoc] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const closeDialog = useCallback(() => setDialog(null), []);
+
+  /**
+   * Opens one submitted document — the file itself, through a signed link, in
+   * the device's own viewer. Deliberately not a jump to another screen: the
+   * office wants to see the scan the driver or customer actually filed.
+   */
+  const viewDocument = useCallback(async (id: string) => {
+    setOpeningDoc(id);
+    try {
+      await openExternalUrl(await documentService.downloadUrl(id));
+    } catch (failure) {
+      setDialog({
+        tone: 'danger',
+        icon: 'alert-circle',
+        title: 'Could not open it',
+        message:
+          failure instanceof Error
+            ? failure.message
+            : 'That document is not available.',
+        confirmLabel: 'Close',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setOpeningDoc(null);
+    }
+  }, []);
 
   const distanceKm = Number(trip?.distanceKm ?? 0);
   const coveredKm = Number(trip?.coveredKm ?? 0);
@@ -201,11 +241,6 @@ export const TripDetailsScreen: React.FC = () => {
 
   const trackLive = useCallback(
     () => navigation.navigate('LiveTripTrack', { tripId }),
-    [navigation, tripId],
-  );
-
-  const openPod = useCallback(
-    () => navigation.navigate('PodViewer', { tripId }),
     [navigation, tripId],
   );
 
@@ -510,30 +545,56 @@ export const TripDetailsScreen: React.FC = () => {
         <Text style={[styles.section, styles.sectionGap]}>
           DOCUMENTS · {docCount}
         </Text>
-        <View style={styles.docGrid}>
-          {DOCS.map(doc => (
-            <Pressable
-              key={doc.id}
-              onPress={doc.id === 'pod' ? openPod : undefined}
-              accessibilityRole="button"
-              accessibilityLabel={`${doc.name}, ${doc.size}`}
-              style={({ pressed }) => [styles.docCard, pressed && styles.pressed]}
-            >
-              <IconWell
-                icon={doc.icon}
-                size={26}
-                iconSize={14}
-                backgroundColor={doc.bg}
-                color={doc.color}
-                borderRadius={radius.md}
-              />
-              <View style={styles.docBody}>
-                <Text style={styles.docName}>{doc.name}</Text>
-                <Text style={styles.docSize}>{doc.size}</Text>
-              </View>
-            </Pressable>
-          ))}
-        </View>
+        {documents.length ? (
+          <View style={styles.docGrid}>
+            {documents.map(doc => {
+              const kind = String(doc.kind ?? 'OTHER');
+              const style = DOC_STYLE[kind] ?? DOC_STYLE.OTHER;
+              const id = String(doc.id);
+              const size = formatSize(Number(doc.sizeBytes ?? 0));
+              return (
+                <Pressable
+                  key={id}
+                  onPress={() => viewDocument(id)}
+                  disabled={openingDoc !== null}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${style.label}`}
+                  accessibilityState={{ busy: openingDoc === id }}
+                  style={({ pressed }) => [styles.docCard, pressed && styles.pressed]}
+                >
+                  <IconWell
+                    icon={style.icon}
+                    size={26}
+                    iconSize={14}
+                    backgroundColor={style.bg}
+                    color={style.color}
+                    borderRadius={radius.md}
+                  />
+                  <View style={styles.docBody}>
+                    <Text style={styles.docName} numberOfLines={1}>
+                      {style.label}
+                    </Text>
+                    <Text style={styles.docSize} numberOfLines={1}>
+                      {size || 'Tap to open'}
+                    </Text>
+                  </View>
+                  {openingDoc === id ? (
+                    <ActivityIndicator size="small" color={palette.navy} />
+                  ) : (
+                    <Icon name="eye" size={14} color={palette.navy} />
+                  )}
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={styles.docEmpty}>
+            <Icon name="file-text" size={14} color={palette.slate400} />
+            <Text style={styles.docEmptyText}>
+              No documents filed against this trip yet.
+            </Text>
+          </View>
+        )}
         </>
         ) : null}
 
@@ -590,6 +651,17 @@ export const TripDetailsScreen: React.FC = () => {
           onPress={trackLive}
         />
       </Footer>
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        tone={dialog?.tone}
+        icon={dialog?.icon}
+        title={dialog?.title ?? ''}
+        message={dialog?.message}
+        confirmLabel={dialog?.confirmLabel}
+        onConfirm={() => dialog?.onConfirm()}
+        onCancel={closeDialog}
+      />
     </Screen>
   );
 };
@@ -751,6 +823,21 @@ const styles = StyleSheet.create({
   docBody: { flex: 1, minWidth: 0 },
   docName: font(9, '800', { color: palette.navy }),
   docSize: font(8, '400', { color: palette.slate500 }),
+  docEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(8),
+    marginBottom: s(12),
+    padding: s(11),
+    backgroundColor: palette.surfaceAlt,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.border,
+  },
+  docEmptyText: {
+    ...font(9, '600', { color: palette.slate500 }),
+    flex: 1,
+  },
 
   pressed: { opacity: 0.8 },
 });

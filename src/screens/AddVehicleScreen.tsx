@@ -63,6 +63,13 @@ import {
  * type filter matched nothing an operator could pick.
  */
 
+/**
+ * Chosen when the make or the type is not on the list — the picker then reveals
+ * a text field to type it. A sentinel rather than an empty value, so "nothing
+ * chosen yet" and "chosen to type my own" stay distinct.
+ */
+const OTHER = '__other__';
+
 const MAKES = [
   { label: 'Tata Motors', value: 'Tata Motors' },
   { label: 'Ashok Leyland', value: 'Ashok Leyland' },
@@ -70,6 +77,7 @@ const MAKES = [
   { label: 'Bharat Benz', value: 'Bharat Benz' },
   { label: 'Mahindra', value: 'Mahindra' },
   { label: 'Volvo', value: 'Volvo' },
+  { label: 'Other (type manufacturer)…', value: OTHER },
 ];
 
 /** The fields the form validates, which is what `errors` is keyed by. */
@@ -170,9 +178,13 @@ export const AddVehicleScreen: React.FC = () => {
 
   const [registration, setRegistration] = useState('');
   const [type, setType] = useState('');
+  /* The custom vehicle type, used only when "Other…" is chosen above. */
+  const [typeOther, setTypeOther] = useState('');
   const [capacity, setCapacity] = useState('');
   const [year, setYear] = useState('');
   const [make, setMake] = useState('Tata Motors');
+  /* The custom manufacturer, used only when "Other…" is chosen above. */
+  const [makeOther, setMakeOther] = useState('');
   const [model, setModel] = useState('');
   const [chassis, setChassis] = useState('');
   const [engine, setEngine] = useState('');
@@ -215,19 +227,23 @@ export const AddVehicleScreen: React.FC = () => {
         if (cancelled) {
           return;
         }
-        setTypeOptions(
-          rows.map(row => ({
+        setTypeOptions([
+          ...rows.map(row => ({
             label: row.capacityLabel
               ? `${row.name} (${row.capacityLabel})`
               : row.name,
             // The stored value is the name, which is what a booking carries.
             value: row.name,
           })),
-        );
+          // A type the catalogue does not list can still be typed by hand.
+          { label: 'Other (type vehicle type)…', value: OTHER },
+        ]);
       })
       .catch(() => {
         if (!cancelled) {
           setTypesFailed(true);
+          // Even when the catalogue will not load, "Other" lets a type be added.
+          setTypeOptions([{ label: 'Other (type vehicle type)…', value: OTHER }]);
         }
       });
     return () => {
@@ -299,12 +315,16 @@ export const AddVehicleScreen: React.FC = () => {
    * insurance, fitness and PUC still have to be filed against a real vehicle.
    */
   const addToFleet = useCallback(async () => {
+    // When "Other…" is chosen the real value is what was typed beside it.
+    const effectiveType = type === OTHER ? typeOther.trim() : type;
+    const effectiveMake = make === OTHER ? makeOther.trim() : make;
+
     const found: Errors<VehicleForm> = {
       registration: validateRegistration(registration),
-      type: validateRequired('vehicle type')(type),
+      type: validateRequired('vehicle type')(effectiveType),
       capacity: validateCapacity(capacity),
       year: validateYear(year),
-      make: validateRequired('manufacturer')(make),
+      make: validateRequired('manufacturer')(effectiveMake),
       model: validateRequired('model')(model),
       driverId:
         assignNow && !driverId ? 'Choose a driver, or turn this off' : undefined,
@@ -320,10 +340,10 @@ export const AddVehicleScreen: React.FC = () => {
     try {
       const created = await vehicleService.create({
         registration: packRegistration(registration),
-        type,
+        type: effectiveType,
         // Stored as the words the fleet screens render, from the number typed.
         capacity: `${capacity.trim()} Ton`,
-        make,
+        make: effectiveMake,
         model: model.trim(),
         year: Number(year),
         /*
@@ -397,12 +417,14 @@ export const AddVehicleScreen: React.FC = () => {
     capacity,
     driverId,
     make,
+    makeOther,
     model,
     navigation,
     chassis,
     engine,
     registration,
     type,
+    typeOther,
     uploads,
     year,
   ]);
@@ -516,8 +538,21 @@ export const AddVehicleScreen: React.FC = () => {
                   : 'Loading vehicle types…'
             }
             marginBottom={10}
-            error={errors.type}
+            error={type === OTHER ? undefined : errors.type}
           />
+
+          {type === OTHER ? (
+            <Input
+              label="New Vehicle Type"
+              required
+              value={typeOther}
+              onChangeText={setTypeOther}
+              placeholder="e.g. 20 Ft Container"
+              autoCapitalize="words"
+              marginBottom={10}
+              error={errors.type}
+            />
+          ) : null}
 
           <View style={styles.row}>
             <View style={styles.col}>
@@ -554,8 +589,21 @@ export const AddVehicleScreen: React.FC = () => {
             value={make}
             onChange={setMake}
             marginBottom={10}
-            error={errors.make}
+            error={make === OTHER ? undefined : errors.make}
           />
+
+          {make === OTHER ? (
+            <Input
+              label="Manufacturer Name"
+              required
+              value={makeOther}
+              onChangeText={setMakeOther}
+              placeholder="e.g. Force Motors"
+              autoCapitalize="words"
+              marginBottom={10}
+              error={errors.make}
+            />
+          ) : null}
 
           <Input
             label="Model"
