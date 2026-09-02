@@ -227,7 +227,7 @@ export const LiveTripTrackScreen: React.FC = () => {
             <View style={styles.movingChip}>
               {fixAge ? <BlinkDot color={palette.gold} size={5} /> : null}
               <Text style={styles.movingText}>
-                {(record?.status ?? live.data ? tracking?.status : '') || '—'}
+                {(record?.status ?? tracking?.status) || '—'}
               </Text>
             </View>
             <Text style={styles.updated}>

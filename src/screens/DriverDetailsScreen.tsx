@@ -21,6 +21,7 @@ import {
   Card,
   ConfirmDialog,
   Content,
+  DriverGeoMap,
   Icon,
   IconWell,
   RadialGlow,
@@ -248,6 +249,44 @@ export const DriverDetailsScreen: React.FC = () => {
     [live.data, vehicle?.registration],
   );
 
+  /*
+   * The driver on the map, and their lorry beside them.
+   *
+   * The phone streams the driver's own fix; the lorry carries no tracker of its
+   * own, so while a trip is running it is exactly where the driver is (the same
+   * cab). So the vehicle falls back to the driver's fix on a trip, and off a
+   * trip it reads "not reported" rather than a guessed pin — the same rule the
+   * web panel follows.
+   */
+  const status = String(data?.status ?? '');
+  const onTrip = status === 'ON_TRIP';
+  const driverLat = (data as Record<string, any> | undefined)?.lastLat as
+    | number
+    | null
+    | undefined;
+  const driverLng = (data as Record<string, any> | undefined)?.lastLng as
+    | number
+    | null
+    | undefined;
+  const geoDriver =
+    driverLat != null && driverLng != null
+      ? { position: { latitude: driverLat, longitude: driverLng }, name, onTrip }
+      : null;
+
+  const vehLat =
+    ((vehicle as Record<string, any> | null)?.lastLat as number | null | undefined) ??
+    (onTrip ? driverLat : null);
+  const vehLng =
+    ((vehicle as Record<string, any> | null)?.lastLng as number | null | undefined) ??
+    (onTrip ? driverLng : null);
+  const geoVehicle =
+    vehicle?.registration && vehLat != null && vehLng != null
+      ? {
+          position: { latitude: vehLat, longitude: vehLng },
+          reg: vehicle.registration,
+        }
+      : null;
+
   const call = useCallback(() => {
     if (mobile) {
       Linking.openURL(`tel:${mobile}`).catch(() => undefined);
@@ -474,6 +513,25 @@ export const DriverDetailsScreen: React.FC = () => {
             </View>
             <Icon name="chevron-right" size={16} color={palette.slate400} />
           </Card>
+        </View>
+
+        {/* Geo location — the driver and their lorry on one map. Both show while
+            a trip is running (the lorry rides with the driver); off a trip it
+            reads "not reported" rather than guessing. */}
+        <View style={styles.block}>
+          <Text style={styles.section}>GEO LOCATION</Text>
+          <DriverGeoMap
+            driver={geoDriver}
+            vehicle={geoVehicle}
+            height={s(200)}
+            onPress={() =>
+              navigation.navigate('GeoMap', {
+                title: name && name !== '—' ? `${name} · location` : 'Location',
+                driver: geoDriver,
+                vehicle: geoVehicle,
+              })
+            }
+          />
         </View>
 
         {/* Documents — the onboarding approval gate */}

@@ -19,6 +19,7 @@ import {
   Card,
   ConfirmDialog,
   Content,
+  DriverGeoMap,
   Footer,
   Icon,
   IconWell,
@@ -117,6 +118,35 @@ export const TripDetailsScreen: React.FC = () => {
   const driverMobile: string = trip?.driver?.user?.mobile ?? '';
   const registration: string = trip?.vehicle?.registration ?? '—';
   const vehicleType: string = trip?.vehicle?.type ?? '';
+
+  /*
+   * The lorry and its driver on one map.
+   *
+   * The live fix comes from the fleet board; while the trip runs both sit at
+   * that one point (the driver rides in the cab), spread side by side. A trip
+   * that is not live carries no fix, so the map reads "not reported" instead of
+   * guessing a spot.
+   */
+  const live = useApi(() => tripService.live(), []);
+  const liveLoc = useMemo(() => {
+    const row = (live.data ?? []).find(t => t.tripId === tripId);
+    return row?.location ?? null;
+  }, [live.data, tripId]);
+  const geoVehicle =
+    liveLoc && registration && registration !== '—'
+      ? {
+          position: { latitude: liveLoc.lat, longitude: liveLoc.lng },
+          reg: registration,
+        }
+      : null;
+  const geoDriver =
+    liveLoc && driverName && driverName !== '—'
+      ? {
+          position: { latitude: liveLoc.lat, longitude: liveLoc.lng },
+          name: driverName,
+          onTrip: true,
+        }
+      : null;
   const customer = booking?.customer;
   const customerName: string =
     customer?.company || customer?.user?.name || 'Customer';
@@ -494,6 +524,12 @@ export const TripDetailsScreen: React.FC = () => {
             </>
           ) : null}
         </Card>
+
+        {/* Geo location — the lorry and its driver on one map while the trip is
+            live; "not reported" otherwise. Both share the live fix (the driver
+            rides in the cab) and the map spreads them side by side. */}
+        <Text style={[styles.section, styles.sectionGap]}>GEO LOCATION</Text>
+        <DriverGeoMap driver={geoDriver} vehicle={geoVehicle} height={s(200)} />
 
         {/* Customer */}
         <Text style={[styles.section, styles.sectionGap]}>CUSTOMER</Text>

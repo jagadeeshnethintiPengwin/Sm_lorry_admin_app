@@ -25,6 +25,7 @@ import { UpdateTripStatusScreen } from '@screens/UpdateTripStatusScreen';
 import { TripTimelineScreen } from '@screens/TripTimelineScreen';
 import { LiveTripTrackScreen } from '@screens/LiveTripTrackScreen';
 import { LiveFleetMapScreen } from '@screens/LiveFleetMapScreen';
+import { GeoMapScreen } from '@screens/GeoMapScreen';
 import { PodViewerScreen } from '@screens/PodViewerScreen';
 import { DocumentsScreen } from '@screens/DocumentsScreen';
 import { NotificationsScreen } from '@screens/NotificationsScreen';
@@ -139,6 +140,7 @@ export const RootNavigator: React.FC = () => {
         <Stack.Screen name="TripTimeline" component={TripTimelineScreen} />
         <Stack.Screen name="LiveTripTrack" component={LiveTripTrackScreen} />
         <Stack.Screen name="LiveFleetMap" component={LiveFleetMapScreen} />
+        <Stack.Screen name="GeoMap" component={GeoMapScreen} />
         <Stack.Screen name="PodViewer" component={PodViewerScreen} />
 
         {/* Account */}

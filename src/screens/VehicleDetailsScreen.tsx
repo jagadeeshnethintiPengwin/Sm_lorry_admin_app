@@ -19,6 +19,7 @@ import {
   Card,
   ConfirmDialog,
   Content,
+  DriverGeoMap,
   Footer,
   Icon,
   IconWell,
@@ -221,6 +222,35 @@ export const VehicleDetailsScreen: React.FC = () => {
       .join('') || '—';
 
   /*
+   * The lorry and its driver on one map.
+   *
+   * A vehicle has no tracker of its own — the driver's phone reports where it
+   * is while a trip runs — so the fix comes from the live board. Off a trip the
+   * board carries no position and the map reads "not reported" rather than
+   * guessing. The driver rides in the cab, so both sit at that one point and
+   * the map spreads them side by side.
+   */
+  const liveLoc = trip?.location ?? null;
+  const geoVehicle =
+    liveLoc && registration
+      ? {
+          position: { latitude: liveLoc.lat, longitude: liveLoc.lng },
+          reg: registration,
+        }
+      : null;
+  // The person actually on this trip — the live board's driver, not the
+  // vehicle's roster assignment, which can differ from who is behind the wheel.
+  const tripDriverName = trip?.driver || driverName;
+  const geoDriver =
+    liveLoc && tripDriverName
+      ? {
+          position: { latitude: liveLoc.lat, longitude: liveLoc.lng },
+          name: tripDriverName,
+          onTrip: true,
+        }
+      : null;
+
+  /*
    * The chips under the plate: state, insurance, fitness.
    *
    * They were three fixed labels — IN TRIP, INSURED, FIT OK — so a lorry laid
@@ -334,7 +364,9 @@ export const VehicleDetailsScreen: React.FC = () => {
         setOpeningDoc(null);
       }
     },
-    [uploadDocument],
+    // Everything it touches — the two state setters, the params, the imported
+    // helpers — is stable, so it never needs rebuilding.
+    [],
   );
 
 
@@ -470,6 +502,23 @@ export const VehicleDetailsScreen: React.FC = () => {
             <Icon name="phone" size={14} color={palette.navy} />
           </Pressable>
         </Card>
+
+        {/* Geo location — the lorry and its driver on one map while a trip runs;
+            "not reported" otherwise (a lorry has no tracker of its own — the
+            driver's phone in the cab is its position). */}
+        <Text style={[styles.section, styles.sectionGap]}>GEO LOCATION</Text>
+        <DriverGeoMap
+          driver={geoDriver}
+          vehicle={geoVehicle}
+          height={s(200)}
+          onPress={() =>
+            navigation.navigate('GeoMap', {
+              title: registration ? `Vehicle ${registration}` : 'Location',
+              driver: geoDriver,
+              vehicle: geoVehicle,
+            })
+          }
+        />
 
         {/* Current trip — only when this lorry is actually on one. */}
         {trip ? (

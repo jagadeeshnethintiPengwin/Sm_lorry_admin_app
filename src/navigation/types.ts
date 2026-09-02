@@ -90,6 +90,19 @@ export type RootStackParamList = {
   TripTimeline: { tripId: string };
   LiveTripTrack: { tripId: string };
   LiveFleetMap: undefined;
+  /** Full-screen driver + lorry map, opened from a detail screen's map card. */
+  GeoMap: {
+    title?: string;
+    driver?: {
+      position: { latitude: number; longitude: number };
+      name: string;
+      onTrip?: boolean;
+    } | null;
+    vehicle?: {
+      position: { latitude: number; longitude: number };
+      reg: string;
+    } | null;
+  };
   PodViewer: { tripId: string };
 
   // Reports

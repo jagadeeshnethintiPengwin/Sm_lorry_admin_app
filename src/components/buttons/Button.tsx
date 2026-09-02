@@ -165,7 +165,16 @@ const ButtonComponent: React.FC<ButtonProps> = ({
           ? { borderWidth: s(spec.borderWidth ?? 1.5), borderColor: spec.border }
           : null,
         shadow ?? spec.shadow,
-        flex !== undefined ? { flex, width: undefined } : null,
+        /*
+         * A button that shares a row (`flex={1}` beside another) must be free
+         * to shrink to its share of the width. The base sets `width: '100%'`;
+         * clearing it is not enough on its own, because a flex child still keeps
+         * a min-width of its content, so two "Cancel" / "Yes, Log out" buttons
+         * whose labels are together wider than the sheet would refuse to shrink
+         * and wrap — reading as stacked. `flexBasis: 0` + `minWidth: 0` lets each
+         * take exactly half, side by side, on every device.
+         */
+        flex !== undefined ? [styles.flexChild, { flex, width: undefined }] : null,
         isDisabled ? styles.disabled : null,
         animatedStyle,
         style,
@@ -203,6 +212,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: radius.lg,
   },
+  // Applied when the button is a flex child in a row: it must be able to shrink
+  // to its share of the width instead of holding its content min-width and
+  // wrapping (which reads as the two buttons stacking).
+  flexChild: { flexBasis: 0, minWidth: 0 },
   disabled: { opacity: 0.55 },
   // Multi-select chips — `padding:5px 10px; border-radius:14px`
   chip: {
