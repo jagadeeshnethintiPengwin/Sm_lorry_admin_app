@@ -41,6 +41,7 @@ export * from './modals/AssignVehicleDialog';
 export * from './modals/CenterModal';
 export * from './modals/ConfirmDialog';
 export * from './modals/ImageSourceSheet';
+export * from './modals/ImageViewerModal';
 export * from './common/IndiaFlagMini';
 export * from './common/GridMap';
 export * from './common/TripMap';

@@ -316,7 +316,15 @@ apiClient.interceptors.response.use(
     ) {
       request.retried = true;
       const token = await renewOnce();
-      if (token) {
+      /*
+       * A multipart upload cannot be replayed from here: React Native consumes
+       * a FormData's file parts on the first send, so re-issuing this config
+       * would post an empty body and the server would reject it as "no file".
+       * The token has still been refreshed, so we fall through and reject — and
+       * `uploadService.upload` catches the 401 and resends a freshly built form.
+       * Every other (JSON) request replays in place, exactly as before.
+       */
+      if (token && !(request.data instanceof FormData)) {
         request.headers.Authorization = `Bearer ${token}`;
         return apiClient(request);
       }

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -8,7 +8,8 @@ import {
   View,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 
 import {
   AppHeader,
@@ -27,6 +28,7 @@ import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
 import { s } from '@theme/metrics';
+import type { RootStackParamList } from '@navigation/types';
 import { driverService } from '@services/fleet.service';
 import { uploadService } from '@services/upload.service';
 import { useDocumentPicker, useImagePicker } from '@hooks/useImagePicker';
@@ -94,6 +96,16 @@ type DriverForm = {
 
 export const AddDriverScreen: React.FC = () => {
   const navigation = useNavigation();
+  const route = useRoute<RouteProp<RootStackParamList, 'AddDriver'>>();
+
+  /**
+   * The id of the driver being edited, or `null` for a fresh registration.
+   *
+   * Everything the edit form does differently — prefilling the fields, saving
+   * as an update, hiding the document tiles, the header and button wording —
+   * keys off this one value.
+   */
+  const editingId = route.params?.driverId ?? null;
 
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
@@ -131,6 +143,138 @@ export const AddDriverScreen: React.FC = () => {
   const [errors, setErrors] = useState<Errors<DriverForm>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  /**
+   * The KYC numbers as they were prefilled, and the kind the licence is filed
+   * under.
+   *
+   * Save re-files a document only when its number actually changed, so an
+   * already-approved licence, Aadhaar or PAN is not needlessly dropped back to
+   * PENDING for a field the operator never touched. The DL kind is remembered
+   * so a re-file updates that row rather than opening a second one beside an
+   * older `LICENCE`.
+   */
+  const seededDl = useRef<string>('');
+  const seededAadhaar = useRef<string>('');
+  const seededPan = useRef<string>('');
+  const dlKind = useRef<string>('DL');
+
+  /**
+   * Fills the form from the driver being edited.
+   *
+   * Runs once, only in edit mode, and reverses the transforms the create path
+   * applies on the way out: the mobile is stored in E.164 and the field holds
+   * the ten national digits (`packMobile` strips the country code either way);
+   * the licence and KYC numbers live in the driver's `documents` relation (the
+   * licence also as a column), seeded raw so they stay editable and are
+   * re-packed on save.
+   *
+   * `prev || next` on each field so a fetch that lands after the operator has
+   * started typing never wipes what they wrote; best-effort on failure.
+   */
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!editingId || seeded.current) {
+      return;
+    }
+    let cancelled = false;
+    driverService
+      .get(editingId)
+      .then(d => {
+        if (cancelled) {
+          return;
+        }
+        seeded.current = true;
+
+        const user = (d.user ?? null) as {
+          name?: string;
+          mobile?: string;
+          photoUrl?: string;
+        } | null;
+        const documents = (d.documents ?? []) as Array<{
+          kind?: string;
+          number?: string;
+        }>;
+        const kindOf = (row: { kind?: string }) =>
+          String(row.kind ?? '').toUpperCase();
+        const dlDoc = documents.find(
+          row => kindOf(row) === 'DL' || kindOf(row) === 'LICENCE',
+        );
+        const aadhaarDoc = documents.find(row => kindOf(row) === 'AADHAAR');
+        const panDoc = documents.find(row => kindOf(row) === 'PAN');
+
+        setName(prev => prev || String(user?.name ?? ''));
+        // E.164 (`+9198…`) → the ten national digits the +91 field holds; the
+        // prefix is re-added by `packMobile` on save.
+        setMobile(prev => prev || packMobile(String(user?.mobile ?? '')));
+        setAddress(prev => prev || String(d.address ?? ''));
+
+        // The licence: the DL document's number, else the driver's own column.
+        const licence = String(dlDoc?.number ?? d.licenceNumber ?? '');
+        setDlNumber(prev => prev || licence);
+        if (dlDoc?.kind) {
+          dlKind.current = kindOf(dlDoc);
+        }
+        // `2029-03-11T00:00:00Z` → `2029-03-11`, which is what DateField shows.
+        const validAt = d.licenceValid ? new Date(String(d.licenceValid)) : null;
+        if (validAt && !Number.isNaN(validAt.getTime())) {
+          setValidTill(prev => prev || validAt.toISOString().split('T')[0]);
+        }
+
+        setAadhar(prev => prev || String(aadhaarDoc?.number ?? ''));
+        setPan(prev => prev || String(panDoc?.number ?? ''));
+
+        /*
+         * DOB, experience, issue date and licence classes are collected by this
+         * form but not persisted on the driver yet, so there is nothing to read
+         * back — seeded defensively in case a column is added later, leaving the
+         * defaults otherwise.
+         */
+        const extra = d as Record<string, unknown>;
+        if (typeof extra.dob === 'string') {
+          setDob(prev => prev || (extra.dob as string));
+        }
+        if (extra.experience != null) {
+          setExperience(prev => prev || String(extra.experience));
+        }
+        if (typeof extra.issueDate === 'string') {
+          setIssueDate(prev => prev || (extra.issueDate as string));
+        }
+        if (Array.isArray(extra.licenceClasses) && extra.licenceClasses.length) {
+          const stored = extra.licenceClasses as string[];
+          setClasses(prev =>
+            prev.length === 1 && prev[0] === 'HMV' ? stored : prev,
+          );
+        }
+
+        // The photograph already on file, shown so the operator can see it
+        // landed. The stored URL is a signed display link, so it loads without
+        // a bearer — pointed at both `url` and `preview` for the tile to draw.
+        const photoUrl = user?.photoUrl ?? (extra.avatarUrl as string | undefined);
+        if (photoUrl) {
+          setPhoto(
+            prev =>
+              prev || {
+                name: 'Current photo',
+                size: 0,
+                url: String(photoUrl),
+                preview: String(photoUrl),
+                type: 'image/*',
+              },
+          );
+        }
+
+        // Remembered so save can tell which numbers the operator changed.
+        seededDl.current = packLicence(licence);
+        seededAadhaar.current = String(aadhaarDoc?.number ?? '');
+        seededPan.current = String(panDoc?.number ?? '');
+      })
+      // Best-effort: a driver that will not load leaves the form as-is.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [editingId]);
 
   const toggleClass = useCallback((value: string) => {
     setClasses(current =>
@@ -199,13 +343,15 @@ export const AddDriverScreen: React.FC = () => {
   );
 
   /**
-   * Registers the driver and their sign-in account.
+   * Writes the driver — an update when editing, a create otherwise.
    *
    * The footer button used to be `navigation.goBack` — the whole form was
    * collected and dropped, so "Add Driver" added nobody. The licence expiry is
    * checked before anything is sent because a driver whose licence has already
    * run out is the one case this screen exists to catch, and nothing
-   * downstream looks again.
+   * downstream looks again. Editing writes the changed details and returns to
+   * the driver; its scans stay managed from the details screen, which is why
+   * the document tiles are hidden in edit mode.
    */
   const addDriver = useCallback(async () => {
     const found: Errors<DriverForm> = {
@@ -236,20 +382,85 @@ export const AddDriverScreen: React.FC = () => {
      * by the text fields — the tiles are what has to change colour, and they
      * are further down the screen than the inputs.
      */
-    const missing = [
-      !docs.dl ? 'the licence photo' : null,
-      !docs.kyc ? 'the Aadhaar photo' : null,
-    ].filter(Boolean);
+    // Create only. Editing hides the upload tiles and never touches the scans,
+    // so a driver already on the roster is not blocked over photos the edit
+    // form does not even show.
+    if (!editingId) {
+      const missing = [
+        !docs.dl ? 'the licence photo' : null,
+        !docs.kyc ? 'the Aadhaar photo' : null,
+      ].filter(Boolean);
 
-    if (missing.length) {
-      setSubmitError(
-        `Attach ${missing.join(' and ')} before adding the driver. Both are required.`,
-      );
-      return;
+      if (missing.length) {
+        setSubmitError(
+          `Attach ${missing.join(' and ')} before adding the driver. Both are required.`,
+        );
+        return;
+      }
     }
 
     setSaving(true);
     try {
+      if (editingId) {
+        /*
+         * Edit: write the details and return to the driver.
+         *
+         * The update DTO mirrors the create body's shape, so the same field
+         * mapping serves it — the mobile packed to its national digits, the
+         * licence packed of spaces, the address sent only when filled (an empty
+         * string fails the DTO's length rule and would reject a valid driver).
+         */
+        await driverService.update(editingId, {
+          name: name.trim(),
+          mobile: packMobile(mobile),
+          licenceNumber: packLicence(dlNumber),
+          licenceValid: validTill,
+          ...(address.trim() ? { address: address.trim() } : {}),
+        });
+
+        /*
+         * A KYC number is re-filed only when it actually changed from what was
+         * prefilled. Re-sending an unchanged number would drop an
+         * already-approved document back to PENDING for review — the backend
+         * clears the verdict on any `number` edit — so an untouched field is
+         * left alone. The DL number also rides on the driver column above; this
+         * keeps the document row's own number in step when it is the one edited.
+         *
+         * Deliberately not fatal, as on create: the details are already saved,
+         * and a number that would not file can be corrected from the driver's
+         * screen rather than failing the whole edit.
+         */
+        const nextDl = packLicence(dlNumber);
+        const nextAadhaar = aadhar.trim();
+        const nextPan = pan.trim();
+        const refiled: Array<Promise<unknown>> = [];
+        if (nextDl && nextDl !== seededDl.current) {
+          refiled.push(
+            driverService
+              .saveDocument(editingId, { kind: dlKind.current, number: nextDl })
+              .catch(() => undefined),
+          );
+        }
+        if (nextAadhaar && nextAadhaar !== seededAadhaar.current) {
+          refiled.push(
+            driverService
+              .saveDocument(editingId, { kind: 'AADHAAR', number: nextAadhaar })
+              .catch(() => undefined),
+          );
+        }
+        if (nextPan && nextPan !== seededPan.current) {
+          refiled.push(
+            driverService
+              .saveDocument(editingId, { kind: 'PAN', number: nextPan })
+              .catch(() => undefined),
+          );
+        }
+        await Promise.all(refiled);
+
+        navigation.goBack();
+        return;
+      }
+
       const created = await driverService.create({
         name: name.trim(),
         // The API normalises to E.164 itself; sending the ten national digits
@@ -316,7 +527,11 @@ export const AddDriverScreen: React.FC = () => {
       // A number or licence already on the roster arrives here as the sentence
       // the API wrote for it, naming who holds it.
       setSubmitError(
-        error instanceof Error ? error.message : 'Could not add the driver',
+        error instanceof Error
+          ? error.message
+          : editingId
+            ? 'Could not update the driver'
+            : 'Could not add the driver',
       );
     } finally {
       setSaving(false);
@@ -327,6 +542,7 @@ export const AddDriverScreen: React.FC = () => {
     dlNumber,
     docs,
     dob,
+    editingId,
     issueDate,
     mobile,
     name,
@@ -339,8 +555,8 @@ export const AddDriverScreen: React.FC = () => {
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
-        title="Add New Driver"
-        subtitle="Register driver profile"
+        title={editingId ? 'Edit Driver' : 'Add New Driver'}
+        subtitle={editingId ? 'Update driver profile' : 'Register driver profile'}
         showBack
         backIcon="x"
         onBackPress={navigation.goBack}
@@ -576,10 +792,19 @@ export const AddDriverScreen: React.FC = () => {
           />
         </Card>
 
-        {/* UPLOAD DOCUMENTS */}
+        {/*
+          UPLOAD DOCUMENTS — create only.
+
+          Editing an existing driver is purely their details; the licence and
+          KYC scans are filed and reviewed from the Driver Profile screen, so
+          the tiles would be a second, confusing way in that this form's update
+          does not even read.
+        */}
+        {!editingId ? (
+          <>
         {/*
           Marked required, like the sections above it.
-          
+
           The tiles were indistinguishable from optional extras, so an operator
           filled in the form, pressed Add Driver and was refused by something
           they had no reason to think was needed. The asterisk is the same one
@@ -655,6 +880,8 @@ export const AddDriverScreen: React.FC = () => {
         {uploadError ? (
           <Text style={styles.uploadError}>{uploadError}</Text>
         ) : null}
+          </>
+        ) : null}
 
         {submitError ? (
           <Card padding={11} marginBottom={0} style={styles.errorCard}>
@@ -666,7 +893,15 @@ export const AddDriverScreen: React.FC = () => {
 
       <Footer>
         <Button
-          label={saving ? 'Adding…' : 'Add Driver'}
+          label={
+            editingId
+              ? saving
+                ? 'Saving…'
+                : 'Save Changes'
+              : saving
+                ? 'Adding…'
+                : 'Add Driver'
+          }
           variant="gold"
           icon="user-check"
           padding={12}

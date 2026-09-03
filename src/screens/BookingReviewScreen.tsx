@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Linking,
   Pressable,
   StyleSheet,
@@ -39,6 +40,7 @@ import {
   type AdminDocument,
 } from '@services/fleet.service';
 import { openExternalUrl } from '@utils/openExternalUrl';
+import { isImageDoc, resolveMediaUrl } from '@utils/mediaUrl';
 import { useApi } from '@hooks/useApi';
 import type { ConfirmTone } from '@components/modals/ConfirmDialog';
 import type { IconName } from '@components/common/Icon';
@@ -131,6 +133,42 @@ const STATUS_CHIP: Record<
   COMPLETED: { label: 'COMPLETED', tint: 'rgba(22,163,74,0.20)', text: '#4ade80', blink: false },
   REJECTED: { label: 'REJECTED', tint: 'rgba(220,38,38,0.22)', text: '#fca5a5', blink: false },
   CANCELLED: { label: 'CANCELLED', tint: 'rgba(255,255,255,0.14)', text: palette.white, blink: false },
+};
+
+/**
+ * The paper itself, shown small — a customer's e-way bill or invoice as the
+ * actual image rather than a generic file icon. The URL is the signed one the
+ * API now returns; if it still fails to load, it falls back to the kind icon so
+ * a card is never blank.
+ */
+const DocThumb: React.FC<{
+  fileUrl?: string | null;
+  name?: string | null;
+  icon: IconName;
+  bg: string;
+  color: string;
+}> = ({ fileUrl, name, icon, bg, color }) => {
+  const [broken, setBroken] = useState(false);
+  if (fileUrl && !broken && isImageDoc(fileUrl, name)) {
+    return (
+      <Image
+        source={{ uri: resolveMediaUrl(fileUrl) ?? fileUrl }}
+        style={styles.docThumb}
+        onError={() => setBroken(true)}
+        accessibilityLabel="Document preview"
+      />
+    );
+  }
+  return (
+    <IconWell
+      icon={icon}
+      size={26}
+      iconSize={14}
+      backgroundColor={bg}
+      color={color}
+      borderRadius={radius.md}
+    />
+  );
 };
 
 export const BookingReviewScreen: React.FC = () => {
@@ -702,13 +740,12 @@ export const BookingReviewScreen: React.FC = () => {
                   accessibilityLabel={`View ${style.label}`}
                   accessibilityState={{ busy: openingDoc === id }}
                 >
-                  <IconWell
+                  <DocThumb
+                    fileUrl={(doc as { fileUrl?: string | null }).fileUrl}
+                    name={(doc as { name?: string | null }).name}
                     icon={style.icon}
-                    size={26}
-                    iconSize={14}
-                    backgroundColor={style.bg}
+                    bg={style.bg}
                     color={style.color}
-                    borderRadius={radius.md}
                   />
                   <View style={styles.docBody}>
                     <Text style={styles.docName} numberOfLines={1}>
@@ -1162,6 +1199,12 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
   },
   docBody: { flex: 1, minWidth: 0 },
+  docThumb: {
+    width: s(26),
+    height: s(26),
+    borderRadius: radius.md,
+    backgroundColor: palette.gray200,
+  },
   docName: font(9, '800', { color: palette.navy }),
   docSize: font(8, '400', { color: palette.slate500 }),
 

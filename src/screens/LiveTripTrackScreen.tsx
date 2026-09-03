@@ -1,5 +1,15 @@
-import React, { useCallback } from 'react';
-import { Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import {
+  Linking,
+  Modal,
+  Pressable,
+  Share,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -117,6 +127,16 @@ export const LiveTripTrackScreen: React.FC = () => {
   const vehicleLine = [record?.vehicle?.type, record?.vehicle?.model]
     .filter(Boolean)
     .join(' · ');
+
+  // The driver on the map beside the lorry — a live trip, so navy-ringed.
+  const mapDriver =
+    driverName && driverName !== '—' ? { name: driverName, onTrip: true } : null;
+
+  // The full-screen map is a modal over this screen, reading the same live
+  // props, so the lorry keeps moving on it without re-subscribing.
+  const [fullScreen, setFullScreen] = useState(false);
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
 
   /** The fix's age, which is the honest version of "48 km/h · moving". */
   const fixAge = (() => {
@@ -279,6 +299,7 @@ export const LiveTripTrackScreen: React.FC = () => {
           pickup={pickup!}
           drop={drop!}
           current={current ?? pickup!}
+          driver={mapDriver}
           height={220}
           style={styles.map}
         >
@@ -289,6 +310,16 @@ export const LiveTripTrackScreen: React.FC = () => {
               {speedKmph != null ? ` · ${speedKmph} km/h` : ''}
             </Text>
           </View>
+
+          {/* Open the map full-screen — a full Google map with both markers. */}
+          <Pressable
+            style={styles.expandBtn}
+            onPress={() => setFullScreen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Open full-screen map"
+          >
+            <Icon name="maximize-2" size={16} color={palette.navy} />
+          </Pressable>
 
           {/* Zoom */}
           <View style={styles.zoom}>
@@ -500,6 +531,38 @@ export const LiveTripTrackScreen: React.FC = () => {
           onPress={openTimeline}
         />
       </Footer>
+
+      {/* Full-screen map — a real Google map (pinch-zoom, pan, satellite toggle,
+          recentre) fed the same live props, so the lorry keeps moving and the
+          driver rides beside it, on the route to the drop. */}
+      {pickup && drop ? (
+        <Modal
+          visible={fullScreen}
+          animationType="slide"
+          onRequestClose={() => setFullScreen(false)}
+          statusBarTranslucent
+        >
+          <View style={styles.fullWrap}>
+            <TripMap
+              interactive
+              pickup={pickup}
+              drop={drop}
+              current={current ?? pickup}
+              driver={mapDriver}
+              height={windowHeight}
+              style={styles.fullMap}
+            />
+            <Pressable
+              style={[styles.closeBtn, { top: insets.top + s(12) }]}
+              onPress={() => setFullScreen(false)}
+              accessibilityRole="button"
+              accessibilityLabel="Close full-screen map"
+            >
+              <Icon name="x" size={20} color={palette.navy} />
+            </Pressable>
+          </View>
+        </Modal>
+      ) : null}
     </Screen>
   );
 };
@@ -545,6 +608,31 @@ const styles = StyleSheet.create({
   },
 
   map: { borderRadius: radius.card, marginBottom: s(12) },
+  expandBtn: {
+    position: 'absolute',
+    top: s(12),
+    right: s(12),
+    width: s(34),
+    height: s(34),
+    borderRadius: radius.md,
+    backgroundColor: palette.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.mapMarker,
+  },
+  fullWrap: { flex: 1, backgroundColor: palette.screenBg },
+  fullMap: { borderRadius: 0 },
+  closeBtn: {
+    position: 'absolute',
+    left: s(12),
+    width: s(40),
+    height: s(40),
+    borderRadius: radius.full,
+    backgroundColor: palette.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.mapMarker,
+  },
   plateTag: {
     position: 'absolute',
     top: s(60),

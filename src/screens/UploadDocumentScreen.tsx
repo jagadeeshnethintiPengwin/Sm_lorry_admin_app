@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -10,6 +10,7 @@ import {
   Button,
   Card,
   Content,
+  FieldError,
   Footer,
   Icon,
   IconWell,
@@ -25,10 +26,50 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s, wp } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
+import type { IconName } from '@components/common/Icon';
 import { vehicleService } from '@services/fleet.service';
 import { uploadService } from '@services/upload.service';
+import { isImageDoc, resolveMediaUrl } from '@utils/mediaUrl';
 import { useDocumentPicker, useImagePicker } from '@hooks/useImagePicker';
 import type { PickedImage } from '@hooks/useImagePicker';
+
+/**
+ * How the screen dresses itself for each paper it can file.
+ *
+ * One screen serves all four of a truck's papers, so the kicker, the hero icon
+ * and — the one that used to be wrong for everything but RC — the number
+ * field's label all come from the kind the caller passed. A policy has a Policy
+ * Number, not an "RC Number".
+ */
+const DOC_FORM: Record<
+  string,
+  { kicker: string; icon: IconName; numberLabel: string; numberPlaceholder: string }
+> = {
+  RC: {
+    kicker: 'REGISTRATION CERTIFICATE',
+    icon: 'file-text',
+    numberLabel: 'RC Number',
+    numberPlaceholder: 'e.g. TS0987654321',
+  },
+  INS: {
+    kicker: 'INSURANCE POLICY',
+    icon: 'shield-check',
+    numberLabel: 'Policy Number',
+    numberPlaceholder: 'e.g. 1234567890',
+  },
+  FIT: {
+    kicker: 'FITNESS CERTIFICATE',
+    icon: 'badge-check',
+    numberLabel: 'Certificate Number',
+    numberPlaceholder: 'e.g. FC-1234567',
+  },
+  PUC: {
+    kicker: 'PUC CERTIFICATE',
+    icon: 'leaf',
+    numberLabel: 'Certificate Number',
+    numberPlaceholder: 'e.g. PUC-1234567',
+  },
+};
 
 /** A file that is on the server, plus the local copy used to preview it. */
 type StoredFile = {
@@ -38,6 +79,22 @@ type StoredFile = {
   preview: string;
   type: string;
 };
+
+/**
+ * A `StoredFile` for a scan already on the server — used to prefill the form
+ * when an existing document is opened for editing. There is no local copy, so
+ * the preview is the stored URL itself (re-rooted onto the app's host).
+ */
+const existingFile = (url: string): StoredFile => ({
+  name: isImageDoc(url) ? 'Current scan' : 'Current document',
+  size: 0,
+  url,
+  preview: resolveMediaUrl(url) ?? url,
+  type: isImageDoc(url) ? 'image/jpeg' : 'application/pdf',
+});
+
+/** The stored `expiresAt` as the `YYYY-MM-DD` the date field speaks. */
+const toIsoDate = (value: string): string => value.split('T')[0] ?? value;
 
 /** `904 KB`, `1.2 MB` — the caption under an attached file. */
 const readableSize = (bytes: number): string => {
@@ -72,6 +129,12 @@ export const UploadDocumentScreen: React.FC = () => {
   const ownerId = route.params?.ownerId ?? null;
   const ownerLabel = route.params?.ownerLabel ?? 'this vehicle';
 
+  // Which of the truck's papers is being filed. RC is the default — the screen
+  // was RC-only before the document list learned to say which one it wanted.
+  const kind = route.params?.kind ?? 'RC';
+  const kindLabel = route.params?.kindLabel ?? 'RC Book';
+  const form = DOC_FORM[kind] ?? DOC_FORM.RC;
+
   /*
    * Empty, because nothing has been uploaded.
    *
@@ -86,18 +149,74 @@ export const UploadDocumentScreen: React.FC = () => {
   const [back, setBack] = useState<StoredFile | null>(null);
   const [target, setTarget] = useState<'front' | 'back' | null>(null);
 
-  const [rcNumber, setRcNumber] = useState('');
-  const [issueDate, setIssueDate] = useState('');
+  const [docNumber, setDocNumber] = useState('');
   const [validTill, setValidTill] = useState('');
-  const [rto, setRto] = useState('');
   const [reminder, setReminder] = useState(true);
 
   const [uploading, setUploading] = useState<'front' | 'back' | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-field messages: nothing saves until the scan, the number and the expiry
+  // are all filled in.
+  const [errors, setErrors] = useState<{
+    front?: string;
+    number?: string;
+    validTill?: string;
+  }>({});
 
   const { fromCamera, fromGallery } = useImagePicker();
   const { pickDocument } = useDocumentPicker();
+
+  /*
+   * Editing prefills the form from what is already on file.
+   *
+   * Opened on a paper that has been filed before, the number, expiry and scan
+   * are read back so the operator corrects an existing record rather than
+   * retyping it from scratch. Best-effort: a failed read leaves a blank form to
+   * fill by hand. Each field is only seeded while still untouched, so a fetch
+   * that lands late never overwrites something the operator has begun typing.
+   */
+  useEffect(() => {
+    if (!ownerId) {
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const vehicle = await vehicleService.get(ownerId);
+        const rows = Array.isArray(vehicle.documents)
+          ? (vehicle.documents as Array<{
+              kind: string;
+              number?: string | null;
+              expiresAt?: string | null;
+              fileUrl?: string | null;
+            }>)
+          : [];
+        const paper = rows.find(row => row.kind === kind);
+        const backPaper = rows.find(row => row.kind === `${kind}_BACK`);
+        if (!alive || !paper) {
+          return;
+        }
+        if (paper.number) {
+          setDocNumber(prev => (prev ? prev : paper.number!.trim()));
+        }
+        if (paper.expiresAt) {
+          setValidTill(prev => (prev ? prev : toIsoDate(String(paper.expiresAt))));
+        }
+        if (paper.fileUrl) {
+          setFront(prev => prev ?? existingFile(paper.fileUrl!));
+        }
+        if (backPaper?.fileUrl) {
+          setBack(prev => prev ?? existingFile(backPaper.fileUrl!));
+        }
+      } catch {
+        // Prefill is best-effort; the operator can still fill the form by hand.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [ownerId, kind]);
 
   const closeSheet = useCallback(() => setTarget(null), []);
 
@@ -134,6 +253,7 @@ export const UploadDocumentScreen: React.FC = () => {
         };
         if (side === 'front') {
           setFront(held);
+          setErrors(prev => ({ ...prev, front: undefined }));
         } else {
           setBack(held);
         }
@@ -159,12 +279,35 @@ export const UploadDocumentScreen: React.FC = () => {
     if (saving) {
       return;
     }
-    if (!ownerId) {
-      setError('This screen was opened without a vehicle to file against.');
+
+    /*
+     * Nothing is filed until the record is complete: the scan, the number and
+     * the expiry are all required. Each missing one is flagged against its own
+     * field rather than swallowed into a single line, so the operator sees at a
+     * glance what is left to fill.
+     */
+    const nextErrors: {
+      front?: string;
+      number?: string;
+      validTill?: string;
+    } = {};
+    if (!front) {
+      nextErrors.front = 'Attach the front of the document.';
+    }
+    if (!docNumber.trim()) {
+      nextErrors.number = `Enter the ${form.numberLabel.toLowerCase()}.`;
+    }
+    if (!validTill) {
+      nextErrors.validTill = 'Choose the expiry date.';
+    }
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      setError(null);
       return;
     }
-    if (!front) {
-      setError('Attach the front of the document before saving.');
+
+    if (!ownerId) {
+      setError('This screen was opened without a vehicle to file against.');
       return;
     }
 
@@ -175,16 +318,28 @@ export const UploadDocumentScreen: React.FC = () => {
       const rows = Array.isArray(vehicle.documents)
         ? (vehicle.documents as Array<{ id: string; kind: string }>)
         : [];
-      const rc = rows.find(row => row.kind === 'RC');
-      if (!rc) {
-        throw new Error('That vehicle has no RC record to file against');
+      // File against the paper the caller chose. Filing every kind against the
+      // RC row is exactly the bug this replaces — pick Insurance and it landed
+      // on the RC. Each kind has its own pre-seeded row.
+      const paper = rows.find(row => row.kind === kind);
+      if (!paper) {
+        throw new Error(`That vehicle has no ${kindLabel} record to file against`);
       }
 
-      await vehicleService.saveDocument(rc.id, {
-        fileUrl: front.url,
-        ...(rcNumber.trim() ? { number: rcNumber.trim() } : {}),
-        ...(validTill ? { expiresAt: validTill } : {}),
+      await vehicleService.saveDocument(paper.id, {
+        fileUrl: front!.url,
+        number: docNumber.trim(),
+        expiresAt: validTill,
       });
+      // The back of the card is a separate record: the papers table holds one
+      // row per [vehicleId, kind], so the reverse cannot share the front's row.
+      // Filed under `${kind}_BACK`, and only when a back scan was attached.
+      if (back) {
+        await vehicleService.saveDocumentByKind(ownerId, {
+          kind: `${kind}_BACK`,
+          fileUrl: back.url,
+        });
+      }
       navigation.goBack();
     } catch (err) {
       setError(
@@ -193,13 +348,24 @@ export const UploadDocumentScreen: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [front, navigation, ownerId, rcNumber, saving, validTill]);
+  }, [
+    back,
+    docNumber,
+    form.numberLabel,
+    front,
+    kind,
+    kindLabel,
+    navigation,
+    ownerId,
+    saving,
+    validTill,
+  ]);
 
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
         title="Upload Document"
-        subtitle={`RC Book · ${ownerLabel}`}
+        subtitle={`${kindLabel} · ${ownerLabel}`}
         showBack
         onBackPress={navigation.goBack}
       />
@@ -228,11 +394,11 @@ export const UploadDocumentScreen: React.FC = () => {
           />
           <View style={styles.heroRow}>
             <View style={styles.heroTile}>
-              <Icon name="file-text" size={20} color={palette.gold} />
+              <Icon name={form.icon} size={20} color={palette.gold} />
             </View>
             <View style={styles.heroBody}>
-              <Text style={styles.heroKicker}>REGISTRATION CERTIFICATE</Text>
-              <Text style={styles.heroTitle}>RC Book</Text>
+              <Text style={styles.heroKicker}>{form.kicker}</Text>
+              <Text style={styles.heroTitle}>{kindLabel}</Text>
               <Text style={styles.heroMeta}>
                 Original scan or clear photo required
               </Text>
@@ -327,6 +493,7 @@ export const UploadDocumentScreen: React.FC = () => {
             </View>
           </Pressable>
         )}
+        {errors.front ? <FieldError>{errors.front}</FieldError> : null}
 
         {/* BACK SIDE */}
         <Text style={[styles.section, styles.sectionGap]}>
@@ -418,41 +585,33 @@ export const UploadDocumentScreen: React.FC = () => {
         <Text style={[styles.section, styles.sectionGap]}>DOCUMENT DETAILS</Text>
         <Card padding={12}>
           <Input
-            label="RC Number"
+            label={form.numberLabel}
             required
-            value={rcNumber}
-            onChangeText={setRcNumber}
-            placeholder="e.g. TS0987654321"
+            value={docNumber}
+            onChangeText={text => {
+              setDocNumber(text);
+              if (errors.number) {
+                setErrors(prev => ({ ...prev, number: undefined }));
+              }
+            }}
+            placeholder={form.numberPlaceholder}
             autoCapitalize="characters"
+            error={errors.number}
             marginBottom={10}
-            inputStyle={styles.rcInput}
+            inputStyle={styles.numberInput}
           />
 
-          <View style={styles.row}>
-            <View style={styles.col}>
-              <DateField
-                label="Issue Date"
-                value={issueDate}
-                onChange={setIssueDate}
-                marginBottom={10}
-              />
-            </View>
-            <View style={styles.col}>
-              <DateField
-                label="Valid Till"
-                required
-                value={validTill}
-                onChange={setValidTill}
-                marginBottom={10}
-              />
-            </View>
-          </View>
-
-          <Input
-            label="Issuing RTO"
-            value={rto}
-            onChangeText={setRto}
-            placeholder="e.g. RTA Visakhapatnam"
+          <DateField
+            label="Valid Till"
+            required
+            value={validTill}
+            onChange={iso => {
+              setValidTill(iso);
+              if (errors.validTill) {
+                setErrors(prev => ({ ...prev, validTill: undefined }));
+              }
+            }}
+            error={errors.validTill}
             marginBottom={0}
           />
         </Card>
@@ -680,10 +839,7 @@ const styles = StyleSheet.create({
   },
   tagRedText: font(8, '800', { color: palette.white, letterSpacing: 0.5 }),
 
-
-  row: { flexDirection: 'row', gap: s(8) },
-  col: { flex: 1, minWidth: 0 },
-  rcInput: {
+  numberInput: {
     letterSpacing: s(0.5),
     ...font(12, '800', { color: palette.navy }),
   },

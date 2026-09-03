@@ -69,12 +69,40 @@ export type RootStackParamList = {
 
   // Fleet
   VehicleDetails: { vehicleId: string };
-  AddVehicle: undefined;
-  UploadDocument: { ownerId?: string; ownerLabel?: string };
+  /**
+   * `vehicleId` turns the Add form into an Edit form.
+   *
+   * The same screen registers a new truck and edits an existing one — opened
+   * with an id it prefills from that vehicle and saves as an update, opened
+   * without one it stays the blank create form.
+   */
+  AddVehicle: { vehicleId?: string } | undefined;
+  /**
+   * `kind` files the scan against the right paper.
+   *
+   * Opened from a vehicle's document list, the screen was hardcoded to RC, so
+   * choosing Insurance or Fitness still overwrote the RC row. The caller now
+   * names which of `RC | INS | FIT | PUC` it is filing, with `kindLabel` the
+   * human name for the header and hero. Both are optional — reached from Add
+   * Vehicle with neither, it falls back to RC.
+   */
+  UploadDocument: {
+    ownerId?: string;
+    ownerLabel?: string;
+    kind?: string;
+    kindLabel?: string;
+  };
 
   // People
   DriverDetails: { driverId: string };
-  AddDriver: undefined;
+  /**
+   * `driverId` turns the Add form into an Edit form.
+   *
+   * The same screen registers a new driver and edits an existing one — opened
+   * with an id it prefills from that driver and saves as an update, opened
+   * without one it stays the blank create form.
+   */
+  AddDriver: { driverId?: string } | undefined;
   Customers: undefined;
   CustomerDetails: { customerId: string };
   AddCustomer: undefined;

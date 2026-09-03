@@ -34,7 +34,13 @@ import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
 import type { ConfirmTone } from '@components/modals/ConfirmDialog';
 import type { RootStackParamList } from '@navigation/types';
-import { documentService, tripService, type AdminDocument } from '@services/fleet.service';
+import {
+  documentService,
+  tripService,
+  type AdminDocument,
+  type TripFinance,
+} from '@services/fleet.service';
+import { exportTripExcel, exportTripPdf } from '@services/tripReport.service';
 import { openExternalUrl } from '@utils/openExternalUrl';
 import { useApi } from '@hooks/useApi';
 
@@ -182,9 +188,55 @@ export const TripDetailsScreen: React.FC = () => {
   }, [booking?.documents, trip?.documents]);
   const docCount = documents.length;
 
+  /*
+   * The trip's money, read for the downloadable report.
+   *
+   * The card lower down opens the full Payments & Revenue screen; the report
+   * needs the same figures inline. A failure here degrades to `null` — the
+   * report is still produced, it simply falls back to the booking's fare
+   * estimate — so a locked-down finance surface never blocks the download.
+   */
+  const finance = useApi<TripFinance>(() => tripService.finance(tripId), [tripId]);
+
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
   const closeDialog = useCallback(() => setDialog(null), []);
+
+  /**
+   * Builds the trip report and hands it to the OS share sheet — an `.xlsx` the
+   * office can file, or a `.pdf` that embeds the delivery photos and scans. The
+   * heavy work runs in the service; here we only disable the buttons while it
+   * runs and surface a failure through the same dialog the rest of the screen
+   * uses. A dismissed share sheet is not a failure and is swallowed downstream.
+   */
+  const runExport = useCallback(
+    async (kind: 'excel' | 'pdf') => {
+      if (!trip) {
+        return;
+      }
+      setExporting(kind);
+      try {
+        const build = kind === 'excel' ? exportTripExcel : exportTripPdf;
+        await build(trip, finance.data ?? null, documents);
+      } catch (failure) {
+        setDialog({
+          tone: 'danger',
+          icon: 'alert-circle',
+          title: 'Could not create the report',
+          message:
+            failure instanceof Error
+              ? failure.message
+              : 'The report could not be generated.',
+          confirmLabel: 'Close',
+          onConfirm: () => setDialog(null),
+        });
+      } finally {
+        setExporting(null);
+      }
+    },
+    [trip, finance.data, documents],
+  );
 
   /**
    * Opens one submitted document — the file itself, through a signed link, in
@@ -529,7 +581,18 @@ export const TripDetailsScreen: React.FC = () => {
             live; "not reported" otherwise. Both share the live fix (the driver
             rides in the cab) and the map spreads them side by side. */}
         <Text style={[styles.section, styles.sectionGap]}>GEO LOCATION</Text>
-        <DriverGeoMap driver={geoDriver} vehicle={geoVehicle} height={s(200)} />
+        <DriverGeoMap
+          driver={geoDriver}
+          vehicle={geoVehicle}
+          height={s(200)}
+          onPress={() =>
+            navigation.navigate('GeoMap', {
+              title: trip?.reference ? `Trip #${trip.reference}` : 'Location',
+              driver: geoDriver,
+              vehicle: geoVehicle,
+            })
+          }
+        />
 
         {/* Customer */}
         <Text style={[styles.section, styles.sectionGap]}>CUSTOMER</Text>
@@ -631,6 +694,41 @@ export const TripDetailsScreen: React.FC = () => {
             </Text>
           </View>
         )}
+
+        {/* Trip report — the same download the web admin offers: an Excel
+            workbook the office can file, or a PDF with the delivery photos and
+            document scans embedded. Both are handed to the OS share sheet. */}
+        <Text style={[styles.section, styles.sectionGap]}>DOWNLOAD REPORT</Text>
+        <View style={styles.reportRow}>
+          <Button
+            label="Excel"
+            variant="outline"
+            icon="download"
+            iconSize={14}
+            flex={1}
+            padding={10}
+            fontSize={11}
+            gap={6}
+            borderColor={palette.border}
+            loading={exporting === 'excel'}
+            disabled={exporting !== null}
+            onPress={() => runExport('excel')}
+          />
+          <Button
+            label="PDF"
+            variant="outline"
+            icon="file-text"
+            iconSize={14}
+            flex={1}
+            padding={10}
+            fontSize={11}
+            gap={6}
+            borderColor={palette.border}
+            loading={exporting === 'pdf'}
+            disabled={exporting !== null}
+            onPress={() => runExport('pdf')}
+          />
+        </View>
         </>
         ) : null}
 
@@ -870,6 +968,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: palette.border,
   },
+  reportRow: { flexDirection: 'row', gap: s(8), marginBottom: s(12) },
   docEmptyText: {
     ...font(9, '600', { color: palette.slate500 }),
     flex: 1,

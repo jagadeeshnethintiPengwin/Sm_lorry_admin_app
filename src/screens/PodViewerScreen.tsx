@@ -23,6 +23,7 @@ import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
 import { documentService, tripService } from '@services/fleet.service';
+import { resolveMediaUrl } from '@utils/mediaUrl';
 import { useApi } from '@hooks/useApi';
 
 /**
@@ -294,7 +295,7 @@ export const PodViewerScreen: React.FC = () => {
                   that authorises that single file.
                 */}
                 <Image
-                  source={{ uri: shot.url }}
+                  source={{ uri: resolveMediaUrl(shot.url) ?? shot.url }}
                   style={styles.photo}
                   resizeMode="cover"
                 />

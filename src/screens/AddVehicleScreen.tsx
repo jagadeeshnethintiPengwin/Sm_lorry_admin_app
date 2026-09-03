@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -7,7 +7,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
@@ -175,6 +176,16 @@ const DOC_SLOTS: DocSlot[] = [
 export const AddVehicleScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<RouteProp<RootStackParamList, 'AddVehicle'>>();
+
+  /**
+   * The id of the truck being edited, or `null` for a fresh registration.
+   *
+   * Everything the edit form does differently — prefilling the fields, saving
+   * as an update, hiding the document tiles, the header and button wording —
+   * keys off this one value.
+   */
+  const editingId = route.params?.vehicleId ?? null;
 
   const [registration, setRegistration] = useState('');
   const [type, setType] = useState('');
@@ -203,6 +214,19 @@ export const AddVehicleScreen: React.FC = () => {
    * cannot be made.
    */
   const [freeDrivers, setFreeDrivers] = useState<AdminDriver[]>([]);
+
+  /**
+   * The driver already behind this truck's wheel, when editing.
+   *
+   * `available()` lists only *unassigned* drivers, and the one on this lorry is,
+   * by definition, not among them — so on the edit form it would drop out of
+   * the picker and the current assignment would read as empty. Carried
+   * separately and merged into the options so it shows and stays switchable.
+   */
+  const [assignedDriver, setAssignedDriver] = useState<{
+    id: string;
+    label: string;
+  } | null>(null);
 
   /**
    * The types the business actually offers, read from the API.
@@ -271,7 +295,133 @@ export const AddVehicleScreen: React.FC = () => {
     };
   }, [assignNow, freeDrivers.length]);
 
-  const driverOptions = freeDrivers.map(row => ({
+  /**
+   * The stored type and make, parked until their option lists can match them.
+   *
+   * Both are reconciled against a list (the type catalogue, the makes constant)
+   * to decide whether the value is a known option or belongs in the "Other"
+   * field — and the catalogue loads async, so the raw value waits here until
+   * there is something to match it against.
+   */
+  const [storedType, setStoredType] = useState<string | null>(null);
+  const [storedMake, setStoredMake] = useState<string | null>(null);
+
+  /**
+   * Fills the form from the truck being edited.
+   *
+   * Runs once, only in edit mode, and reverses every transform the create path
+   * applies on the way out: the plate is stored packed, the capacity carries a
+   * ` Ton` suffix the numeric field must not show, and an off-catalogue type or
+   * make was folded into a plain string that has to be split back onto the
+   * "Other" field. Type and make are parked for the reconciliation effects
+   * below rather than set here, since they depend on lists that load async.
+   *
+   * `prev || next` on each field so a fetch that lands after the operator has
+   * started typing never wipes what they wrote, and a failed fetch simply
+   * leaves the form blank to fill by hand.
+   */
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!editingId || seeded.current) {
+      return;
+    }
+    let cancelled = false;
+    vehicleService
+      .get(editingId)
+      .then(v => {
+        if (cancelled) {
+          return;
+        }
+        seeded.current = true;
+        setRegistration(prev => prev || String(v.registration ?? ''));
+        // `7 Ton` → `7`; the field holds only the number, and the suffix is
+        // re-added on save.
+        setCapacity(
+          prev =>
+            prev ||
+            String(v.capacity ?? '')
+              .replace(/\s*ton\s*$/i, '')
+              .trim(),
+        );
+        setYear(prev => prev || (v.year ? String(v.year) : ''));
+        setModel(prev => prev || String(v.model ?? ''));
+        setChassis(prev => prev || String(v.chassisNumber ?? ''));
+        setEngine(prev => prev || String(v.engineNumber ?? ''));
+        setStoredType(String(v.type ?? ''));
+        setStoredMake(String(v.make ?? ''));
+
+        // The driver already on this truck: switch the assign row on and carry
+        // the driver so the picker can show the current choice.
+        const drvId = v.driverId ? String(v.driverId) : '';
+        if (drvId) {
+          setAssignNow(true);
+          setDriverId(prev => prev || drvId);
+          const drv = v.driver as
+            | { user?: { name?: string; mobile?: string } }
+            | null
+            | undefined;
+          const name = drv?.user?.name ?? 'Driver';
+          const mobile = drv?.user?.mobile;
+          setAssignedDriver({
+            id: drvId,
+            label: mobile ? `${name} · ${mobile}` : name,
+          });
+        }
+      })
+      // Best-effort: a truck that will not load leaves the form as-is.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [editingId]);
+
+  /**
+   * Matches the stored type to the catalogue once both are in hand.
+   *
+   * A type on the catalogue selects that option; one that is not — an older
+   * lorry registered before the catalogue held it, say — drops into the "Other"
+   * field so it still edits rather than silently changing. Runs once, and only
+   * after the options have loaded (a failed load leaves just "Other", which is
+   * the right home for any stored value anyway).
+   */
+  const typeSeeded = useRef(false);
+  useEffect(() => {
+    if (typeSeeded.current || storedType === null || typeOptions.length === 0) {
+      return;
+    }
+    typeSeeded.current = true;
+    const known = typeOptions.some(o => o.value !== OTHER && o.value === storedType);
+    if (known) {
+      setType(prev => prev || storedType);
+    } else {
+      setType(prev => prev || OTHER);
+      setTypeOther(prev => prev || storedType);
+    }
+  }, [storedType, typeOptions]);
+
+  /**
+   * The same match for the manufacturer, against the static makes list.
+   *
+   * No async wait — `MAKES` is a constant — so this fires as soon as the stored
+   * make lands. `make` starts defaulted to Tata Motors rather than empty, so it
+   * is seeded once by this ref-guarded effect instead of a `prev` empty check.
+   */
+  const makeSeeded = useRef(false);
+  useEffect(() => {
+    if (makeSeeded.current || storedMake === null) {
+      return;
+    }
+    makeSeeded.current = true;
+    const known = MAKES.some(m => m.value !== OTHER && m.value === storedMake);
+    if (known) {
+      setMake(storedMake);
+    } else {
+      setMake(OTHER);
+      setMakeOther(prev => prev || storedMake);
+    }
+  }, [storedMake]);
+
+  const freeDriverOptions = freeDrivers.map(row => ({
     label:
       ((row.user as { name?: string } | undefined)?.name ?? 'Driver') +
       ((row.user as { mobile?: string } | undefined)?.mobile
@@ -279,6 +429,18 @@ export const AddVehicleScreen: React.FC = () => {
         : ''),
     value: row.id,
   }));
+
+  // The current driver rides at the front of the list (and is de-duplicated in
+  // case a stale roster still lists it as free), so the edit form's assign row
+  // shows who is assigned without hiding the free drivers it can switch to.
+  const driverOptions =
+    assignedDriver &&
+    !freeDriverOptions.some(o => o.value === assignedDriver.id)
+      ? [
+          { label: assignedDriver.label, value: assignedDriver.id },
+          ...freeDriverOptions,
+        ]
+      : freeDriverOptions;
 
   /**
    * Nothing is on file for a truck that does not exist yet.
@@ -306,15 +468,16 @@ export const AddVehicleScreen: React.FC = () => {
   const closeSheet = useCallback(() => setTarget(null), []);
 
   /**
-   * Registers the truck, then hands off to Upload Document.
+   * Writes the truck — an update when editing, a create otherwise.
    *
-   * The screen used to do only the second half: it navigated to the upload
-   * step and threw the whole form away, so "Add to Fleet" added nothing and
-   * the vehicle never existed. Everything typed here is now written first, and
-   * the handoff only happens once the API has confirmed it — the RC,
-   * insurance, fitness and PUC still have to be filed against a real vehicle.
+   * Creating still hands off to Upload Document afterwards, because the RC,
+   * insurance, fitness and PUC have to be filed against a real vehicle; the
+   * create path used to do *only* that handoff and throw the form away, so
+   * "Add to Fleet" added nothing. Editing writes the changed details and returns
+   * to the vehicle — its scans are managed from the details screen's per-row
+   * pencil, which is why the document tiles are hidden in edit mode.
    */
-  const addToFleet = useCallback(async () => {
+  const submitVehicle = useCallback(async () => {
     // When "Other…" is chosen the real value is what was typed beside it.
     const effectiveType = type === OTHER ? typeOther.trim() : type;
     const effectiveMake = make === OTHER ? makeOther.trim() : make;
@@ -336,29 +499,39 @@ export const AddVehicleScreen: React.FC = () => {
       return;
     }
 
+    /*
+     * One body for both writes — the update DTO mirrors the create DTO's shape,
+     * so a single field mapping serves either. Stored as the fleet screens read
+     * it: the plate packed of its spaces, the capacity given the ` Ton` suffix
+     * from the number typed. The two identifiers are sent only when filled —
+     * they are optional, and an empty string would fail the DTO's length rule
+     * and reject an otherwise valid truck — and the driver only when the assign
+     * row is on.
+     */
+    const body = {
+      registration: packRegistration(registration),
+      type: effectiveType,
+      capacity: `${capacity.trim()} Ton`,
+      make: effectiveMake,
+      model: model.trim(),
+      year: Number(year),
+      ...(chassis.trim() ? { chassisNumber: chassis.trim() } : {}),
+      ...(engine.trim() ? { engineNumber: engine.trim() } : {}),
+      ...(assignNow && driverId ? { driverId } : {}),
+    };
+
     setSaving(true);
     try {
-      const created = await vehicleService.create({
-        registration: packRegistration(registration),
-        type: effectiveType,
-        // Stored as the words the fleet screens render, from the number typed.
-        capacity: `${capacity.trim()} Ton`,
-        make: effectiveMake,
-        model: model.trim(),
-        year: Number(year),
-        /*
-         * The two identifiers the form has always asked for.
-         *
-         * Both fields were on the screen and neither was ever sent — there
-         * were no columns behind them either — so an operator typed a chassis
-         * number and it vanished on submit. Sent only when filled: they are
-         * optional, and an empty string would fail the DTO's length rule and
-         * reject an otherwise valid truck.
-         */
-        ...(chassis.trim() ? { chassisNumber: chassis.trim() } : {}),
-        ...(engine.trim() ? { engineNumber: engine.trim() } : {}),
-        ...(assignNow && driverId ? { driverId } : {}),
-      });
+      if (editingId) {
+        // Edit: write the details and return to the vehicle. No Upload Document
+        // handoff — that is the create-only "now file its papers" step, and the
+        // scans are edited from the details screen instead.
+        await vehicleService.update(editingId, body);
+        navigation.goBack();
+        return;
+      }
+
+      const created = await vehicleService.create(body);
 
       /*
        * The scans, filed against the truck that now exists.
@@ -407,7 +580,11 @@ export const AddVehicleScreen: React.FC = () => {
       // A duplicate plate or an already-assigned driver arrives here as the
       // sentence the API wrote for it, which is what the operator needs.
       setSubmitError(
-        error instanceof Error ? error.message : 'Could not add the vehicle',
+        error instanceof Error
+          ? error.message
+          : editingId
+            ? 'Could not update the vehicle'
+            : 'Could not add the vehicle',
       );
     } finally {
       setSaving(false);
@@ -416,6 +593,7 @@ export const AddVehicleScreen: React.FC = () => {
     assignNow,
     capacity,
     driverId,
+    editingId,
     make,
     makeOther,
     model,
@@ -499,8 +677,8 @@ export const AddVehicleScreen: React.FC = () => {
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
-        title="Add New Vehicle"
-        subtitle="Register truck to fleet"
+        title={editingId ? 'Edit Vehicle' : 'Add New Vehicle'}
+        subtitle={editingId ? 'Update truck details' : 'Register truck to fleet'}
         showBack
         backIcon="x"
         onBackPress={navigation.goBack}
@@ -641,7 +819,16 @@ export const AddVehicleScreen: React.FC = () => {
           />
         </Card>
 
-        {/* UPLOAD DOCUMENTS */}
+        {/*
+          UPLOAD DOCUMENTS — create only.
+
+          Editing an existing truck is purely its details; its scans are filed
+          and replaced from the Vehicle Details screen's per-row pencil, so the
+          tiles would be a second, confusing way in that this form's update does
+          not even read.
+        */}
+        {!editingId ? (
+          <>
         <Text style={[styles.section, styles.sectionGap]}>
           UPLOAD DOCUMENTS <Text style={styles.star}>*</Text>
         </Text>
@@ -741,6 +928,8 @@ export const AddVehicleScreen: React.FC = () => {
         {uploadError ? (
           <Text style={styles.uploadError}>{uploadError}</Text>
         ) : null}
+          </>
+        ) : null}
 
         {/* Assign driver toggle */}
         <Card padding={11} marginBottom={0} style={styles.assignRow}>
@@ -794,13 +983,21 @@ export const AddVehicleScreen: React.FC = () => {
 
       <Footer>
         <Button
-          label={saving ? 'Adding…' : 'Add to Fleet'}
+          label={
+            editingId
+              ? saving
+                ? 'Saving…'
+                : 'Save Changes'
+              : saving
+                ? 'Adding…'
+                : 'Add to Fleet'
+          }
           variant="gold"
           icon="check-circle-2"
           padding={12}
           fontSize={13}
           loading={saving}
-          onPress={addToFleet}
+          onPress={submitVehicle}
         />
       </Footer>
 

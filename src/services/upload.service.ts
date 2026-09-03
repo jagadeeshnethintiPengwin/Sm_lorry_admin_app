@@ -1,4 +1,4 @@
-import { API_ORIGIN, apiClient } from './api.client';
+import { ApiError, API_ORIGIN, apiClient } from './api.client';
 
 /**
  * Sending a picked file to the server.
@@ -46,28 +46,46 @@ export const uploadService = {
    * that names nothing.
    */
   async upload(file: Uploadable): Promise<UploadedFile> {
-    const form = new FormData();
     /*
-     * React Native's `FormData` takes this shape rather than a `Blob`; the
-     * cast is what the platform's own types require here.
+     * Built fresh for every send. A `FormData`'s file parts are consumed once
+     * it has been posted, so a retry needs its own — and a retry is exactly
+     * what can be needed here: the fifteen-minute access token may expire on
+     * this very call. The client refreshes it on the 401, but it cannot replay
+     * a multipart body, so the first attempt surfaces the 401 and we resend
+     * once, now that the token has been renewed. This is why an upload used to
+     * fail the first time and succeed on the second — the retry is now here
+     * rather than in the operator's hands.
      */
-    form.append('file', {
-      uri: file.uri,
-      name: file.fileName,
-      type: file.type,
-    } as unknown as Blob);
+    const send = () => {
+      const form = new FormData();
+      /*
+       * React Native's `FormData` takes this shape rather than a `Blob`; the
+       * cast is what the platform's own types require here.
+       */
+      form.append('file', {
+        uri: file.uri,
+        name: file.fileName,
+        type: file.type,
+      } as unknown as Blob);
 
-    const { data } = await apiClient.post<UploadedFile>(
-      `${API_ORIGIN}/uploads`,
-      form,
-      {
+      return apiClient.post<UploadedFile>(`${API_ORIGIN}/uploads`, form, {
         // Undefined, not omitted: this deletes the client's JSON default so
         // the runtime can write the boundary in.
         headers: { 'Content-Type': undefined },
         // A scan over a patchy office connection needs longer than a JSON call.
         timeout: 60_000,
-      },
-    );
-    return data;
+      });
+    };
+
+    try {
+      const { data } = await send();
+      return data;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        const { data } = await send();
+        return data;
+      }
+      throw err;
+    }
   },
 };

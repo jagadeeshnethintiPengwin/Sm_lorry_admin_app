@@ -1,7 +1,8 @@
-import React, { memo, useMemo } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import React, { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import MapView, {
+  type MapType,
   Marker,
   Polyline,
   PROVIDER_GOOGLE,
@@ -15,6 +16,7 @@ import { palette } from '@theme/colors';
 import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
+import { font } from '@theme/fonts';
 
 /**
  * Real Google map for the Route Overview screen.
@@ -37,10 +39,30 @@ export type TripMapProps = {
   /** Travelled + remaining path. Falls back to a straight pickup→drop line. */
   routeCoordinates?: LatLng[];
   height: number;
+  /**
+   * The driver behind the wheel — drawn as their own avatar beside the lorry's
+   * live puck (they share the fix, so it is nudged clear rather than stacked),
+   * so a live-track map shows both the vehicle and the driver location.
+   */
+  driver?: { name: string; onTrip?: boolean } | null;
+  /** Full-screen: adds a satellite/road toggle and a recentre button on top of
+   *  the always-on gestures. */
+  interactive?: boolean;
   /** Chrome drawn over the map — plate tag, zoom, recentre, coords. */
   children?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
 };
+
+function initialsOf(name: string): string {
+  return (
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(w => w[0]?.toUpperCase() ?? '')
+      .join('') || '—'
+  );
+}
 
 const TripMapComponent: React.FC<TripMapProps> = ({
   pickup,
@@ -48,9 +70,13 @@ const TripMapComponent: React.FC<TripMapProps> = ({
   current,
   routeCoordinates,
   height,
+  driver,
+  interactive = false,
   children,
   style,
 }) => {
+  const mapRef = useRef<MapView | null>(null);
+  const [mapType, setMapType] = useState<MapType>('standard');
   // Frame both endpoints with padding so neither pin sits on the edge.
   const region = useMemo<Region>(() => {
     const midLat = (pickup.latitude + drop.latitude) / 2;
@@ -70,17 +96,35 @@ const TripMapComponent: React.FC<TripMapProps> = ({
     [routeCoordinates, pickup, drop],
   );
 
+  // Recentre (the full-screen button): re-frame the journey — both ends and the
+  // lorry — after the operator has panned away.
+  const recenter = useCallback(() => {
+    const pts = [pickup, drop, current].filter(
+      (p): p is LatLng => Boolean(p),
+    );
+    if (pts.length === 0) {
+      return;
+    }
+    mapRef.current?.fitToCoordinates(pts, {
+      edgePadding: { top: s(80), right: s(60), bottom: s(80), left: s(60) },
+      animated: true,
+    });
+  }, [pickup, drop, current]);
+
   return (
     <View style={[styles.wrap, { height }, style]}>
       <MapView
+        ref={mapRef}
         provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFill}
         initialRegion={region}
+        mapType={mapType}
         showsTraffic={false}
         toolbarEnabled={false}
         loadingEnabled
         loadingBackgroundColor={palette.screenBg}
         loadingIndicatorColor={palette.gold}
+        showsCompass={interactive}
       >
         {/* Route — navy casing under a gold line, as in the mock's two paths */}
         <Polyline
@@ -123,7 +167,64 @@ const TripMapComponent: React.FC<TripMapProps> = ({
             </View>
           </Marker>
         ) : null}
+
+        {/* Driver — the person at the wheel, beside the lorry. They share the
+            live fix, so the avatar is translated a fixed distance clear of the
+            puck (zoom-independent) rather than stacked on top of it. */}
+        {current && driver ? (
+          <Marker coordinate={current} anchor={{ x: 0.5, y: 0.5 }}>
+            <View style={styles.driverShift}>
+              <View
+                style={[
+                  styles.avatar,
+                  { borderColor: driver.onTrip ? palette.navy : palette.gold },
+                ]}
+              >
+                <Text style={styles.avatarText}>{initialsOf(driver.name)}</Text>
+              </View>
+            </View>
+          </Marker>
+        ) : null}
       </MapView>
+
+      {/* Full-screen controls: satellite/road toggle and recentre. */}
+      {interactive ? (
+        <View style={styles.controls}>
+          <Pressable
+            onPress={() =>
+              setMapType(t => (t === 'standard' ? 'hybrid' : 'standard'))
+            }
+            accessibilityRole="button"
+            accessibilityLabel={
+              mapType === 'standard'
+                ? 'Switch to satellite view'
+                : 'Switch to map view'
+            }
+            style={({ pressed }) => [
+              styles.ctrlBtn,
+              mapType !== 'standard' && styles.ctrlBtnOn,
+              pressed && styles.ctrlPressed,
+            ]}
+          >
+            <Icon
+              name="layers"
+              size={18}
+              color={mapType === 'standard' ? palette.navy : palette.gold}
+            />
+          </Pressable>
+          <Pressable
+            onPress={recenter}
+            accessibilityRole="button"
+            accessibilityLabel="Recentre the map"
+            style={({ pressed }) => [
+              styles.ctrlBtn,
+              pressed && styles.ctrlPressed,
+            ]}
+          >
+            <Icon name="locate-fixed" size={18} color={palette.navy} />
+          </Pressable>
+        </View>
+      ) : null}
 
       {children}
     </View>
@@ -169,6 +270,39 @@ const styles = StyleSheet.create({
     borderColor: palette.navy,
     ...shadows.mapPuck,
   },
+
+  // Shifts the driver avatar clear of the lorry puck — a fixed pixel offset, so
+  // they stay side by side at any zoom.
+  driverShift: { transform: [{ translateX: s(34) }] },
+  avatar: {
+    width: s(34),
+    height: s(34),
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: s(2.5),
+    backgroundColor: palette.navy,
+    ...shadows.mapMarker,
+  },
+  avatarText: font(11, '800', { color: palette.white }),
+
+  controls: {
+    position: 'absolute',
+    top: s(12),
+    right: s(12),
+    gap: s(8),
+  },
+  ctrlBtn: {
+    width: s(38),
+    height: s(38),
+    borderRadius: radius.md,
+    backgroundColor: palette.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.mapMarker,
+  },
+  ctrlBtnOn: { backgroundColor: palette.navy },
+  ctrlPressed: { opacity: 0.7 },
 });
 
 export const TripMap = memo(TripMapComponent);

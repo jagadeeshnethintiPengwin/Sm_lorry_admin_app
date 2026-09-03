@@ -1,5 +1,7 @@
 import { Linking } from 'react-native';
 
+import { resolveMediaUrl } from './mediaUrl';
+
 /**
  * Hands a link to whatever on the phone can show it.
  *
@@ -23,7 +25,11 @@ import { Linking } from 'react-native';
  */
 export async function openExternalUrl(url: string): Promise<void> {
   try {
-    await Linking.openURL(url);
+    // Re-root our own `/uploads/…` links onto the public API host — in
+    // production the backend stamps them against its internal `:4000` address,
+    // which the phone cannot reach. A CDN or external link passes through
+    // unchanged.
+    await Linking.openURL(resolveMediaUrl(url) ?? url);
   } catch (failure) {
     /*
      * Rethrown with wording a driver can act on. The platform message is

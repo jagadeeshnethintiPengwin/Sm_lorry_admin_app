@@ -12,7 +12,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { documentService, driverService, tripService } from '@services/fleet.service';
+import { driverService, tripService } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
 
 import {
@@ -24,6 +24,7 @@ import {
   DriverGeoMap,
   Icon,
   IconWell,
+  ImageViewerModal,
   RadialGlow,
   Screen,
 } from '@components/index';
@@ -35,6 +36,7 @@ import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
 import type { ConfirmTone } from '@components/modals/ConfirmDialog';
 import { openExternalUrl } from '@utils/openExternalUrl';
+import { isImageDoc } from '@utils/mediaUrl';
 import type { RootStackParamList } from '@navigation/types';
 
 /**
@@ -53,6 +55,8 @@ type KycRow = {
   bg: string;
   color: string;
   reviewStatus: 'APPROVED' | 'PENDING' | 'REJECTED' | string;
+  /** Whether the scan is an image (opens in-app) rather than a PDF (opens out). */
+  isImage: boolean;
 };
 
 /** A pending decision or outcome shown by the dialog at the foot of the screen. */
@@ -154,6 +158,8 @@ export const DriverDetailsScreen: React.FC = () => {
         bg: style.bg,
         color: style.color,
         reviewStatus: String(row.reviewStatus ?? 'PENDING'),
+        // An image is read in-app; a PDF still opens outside.
+        isImage: isImageDoc(row.fileUrl),
       };
     });
   }, [data?.documents, licence]);
@@ -176,31 +182,48 @@ export const DriverDetailsScreen: React.FC = () => {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const closeDialog = useCallback(() => setDialog(null), []);
 
+  /** The scan currently open in the in-app image viewer, if any. */
+  const [viewer, setViewer] = useState<{ uri: string; title: string } | null>(
+    null,
+  );
+  const closeViewer = useCallback(() => setViewer(null), []);
+
   /**
-   * Opens the scan the driver filed — the file itself, through a signed link,
-   * in the device's own viewer. The office reviews a document by looking at it,
-   * so the row opens it rather than jumping to another screen.
+   * Opens the scan the driver filed, through a signed link. The office reviews
+   * a document by looking at it, so an image opens in-app in the viewer below;
+   * a PDF, which has no in-app renderer, opens in the device's own viewer.
    */
-  const viewDoc = useCallback(async (documentId: string) => {
-    setOpeningDoc(documentId);
-    try {
-      await openExternalUrl(await documentService.downloadUrl(documentId));
-    } catch (failure) {
-      setDialog({
-        tone: 'danger',
-        icon: 'alert-circle',
-        title: 'Could not open it',
-        message:
-          failure instanceof Error
-            ? failure.message
-            : 'That document is not available.',
-        confirmLabel: 'Close',
-        onConfirm: () => setDialog(null),
-      });
-    } finally {
-      setOpeningDoc(null);
-    }
-  }, []);
+  const viewDoc = useCallback(
+    async (documentId: string, title: string, isImage: boolean) => {
+      setOpeningDoc(documentId);
+      try {
+        // A driver's papers are in the `DriverDocument` table, reachable only by
+        // the driver-scoped route — the shipment `documents/:id/download` cannot
+        // find them, which is why these scans would not open.
+        const url = await driverService.documentUrl(driverId, documentId);
+        if (isImage) {
+          setViewer({ uri: url, title });
+        } else {
+          await openExternalUrl(url);
+        }
+      } catch (failure) {
+        setDialog({
+          tone: 'danger',
+          icon: 'alert-circle',
+          title: 'Could not open it',
+          message:
+            failure instanceof Error
+              ? failure.message
+              : 'That document is not available.',
+          confirmLabel: 'Close',
+          onConfirm: () => setDialog(null),
+        });
+      } finally {
+        setOpeningDoc(null);
+      }
+    },
+    [driverId],
+  );
 
   const reviewDoc = useCallback(
     async (documentId: string, status: 'APPROVED' | 'REJECTED') => {
@@ -306,10 +329,17 @@ export const DriverDetailsScreen: React.FC = () => {
     }
   }, [navigation, vehicle]);
 
-  /** Editing reuses the Add Driver form — same fields, prefilled upstream. */
+  /**
+   * Editing reuses the Add Driver form.
+   *
+   * The id is what tells that screen to open in edit mode — it fetches this
+   * driver, prefills every field, and saves as an update. Navigating with no
+   * params, as this used to, opened a blank form that would have *created* a
+   * second driver instead of editing this one.
+   */
   const editDriver = useCallback(
-    () => navigation.navigate('AddDriver'),
-    [navigation],
+    () => navigation.navigate('AddDriver', { driverId }),
+    [navigation, driverId],
   );
 
   return (
@@ -581,7 +611,7 @@ export const DriverDetailsScreen: React.FC = () => {
                   style={index < kyc.length - 1 ? styles.kycDivider : undefined}
                 >
                   <Pressable
-                    onPress={() => viewDoc(row.id)}
+                    onPress={() => viewDoc(row.id, row.title, row.isImage)}
                     disabled={openingDoc !== null}
                     accessibilityRole="button"
                     accessibilityLabel={`Open ${row.title}`}
@@ -682,6 +712,14 @@ export const DriverDetailsScreen: React.FC = () => {
         confirmLabel={dialog?.confirmLabel}
         onConfirm={() => dialog?.onConfirm()}
         onCancel={closeDialog}
+      />
+
+      {/* An image scan, read inside the app. */}
+      <ImageViewerModal
+        visible={viewer !== null}
+        uri={viewer?.uri}
+        title={viewer?.title}
+        onClose={closeViewer}
       />
     </Screen>
   );

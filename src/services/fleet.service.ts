@@ -225,6 +225,21 @@ export const driverService = {
   },
 
   /**
+   * A signed link to one of a driver's KYC scans.
+   *
+   * Driver papers live in the `DriverDocument` table and are reachable only by
+   * their own driver-scoped route — `documentService.downloadUrl` serves the
+   * shipment `Document` table and cannot find them (a driver-document id looked
+   * up there is a 404, which is why the profile's scans would not open).
+   */
+  documentUrl: async (driverId: string, documentId: string): Promise<string> => {
+    const { data } = await apiClient.get<{ url: string; name: string }>(
+      `/drivers/${driverId}/documents/${documentId}/download`,
+    );
+    return data.url;
+  },
+
+  /**
    * Approve or reject one licence/KYC scan. Until every document is approved the
    * driver cannot be assigned a trip — the backend refuses it — so this is the
    * office's onboarding gate, the same one the web panel drives.
@@ -321,6 +336,20 @@ export const vehicleService = {
     body: { fileUrl?: string; number?: string; expiresAt?: string },
   ): Promise<void> => {
     await apiClient.patch(`/vehicles/documents/${documentId}`, body);
+  },
+
+  /**
+   * Files a scan against a truck's paper by *kind*, creating the row when none
+   * was seeded — how the back of a card is filed, as its own `${kind}_BACK`
+   * record. `POST` on the vehicle rather than `PATCH` on a document id: the
+   * back has no pre-seeded row to patch, so the server upserts by
+   * `[vehicleId, kind]`, the same key the driver app writes against.
+   */
+  saveDocumentByKind: async (
+    vehicleId: string,
+    body: { kind: string; fileUrl?: string; number?: string; expiresAt?: string },
+  ): Promise<void> => {
+    await apiClient.post(`/vehicles/${vehicleId}/documents`, body);
   },
 
   remove: (id: string) => apiClient.delete(`/vehicles/${id}`),

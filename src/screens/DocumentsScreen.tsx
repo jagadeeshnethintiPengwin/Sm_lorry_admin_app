@@ -18,6 +18,7 @@ import {
 } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
 import { openExternalUrl } from '@utils/openExternalUrl';
+import { isImageDoc } from '@utils/mediaUrl';
 
 import {
   AppHeader,
@@ -26,6 +27,7 @@ import {
   Content,
   Icon,
   IconWell,
+  ImageViewerModal,
   Screen,
 } from '@components/index';
 import { palette } from '@theme/colors';
@@ -48,6 +50,8 @@ type DocFile = {
   name: string;
   meta: string;
   hasFile: boolean;
+  /** Whether the file is an image (opens in-app) rather than a PDF (opens out). */
+  isImage: boolean;
   icon: IconName;
   bg: string;
   color: string;
@@ -146,6 +150,8 @@ function toGroups(documents: AdminDocument[]): TripGroup[] {
       color: style.color,
       /* A row with no stored file cannot be opened — say so on the row. */
       hasFile: Boolean(doc.fileUrl),
+      // An image opens in-app; a PDF (waybill, invoice) still hands off outside.
+      isImage: isImageDoc(String(doc.fileUrl ?? ''), doc.name),
     });
   }
 
@@ -180,28 +186,43 @@ export const DocumentsScreen: React.FC = () => {
 
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
 
+  /** The file currently open in the in-app image viewer, if any. */
+  const [viewer, setViewer] = useState<{ uri: string; title: string } | null>(
+    null,
+  );
+  const closeViewer = useCallback(() => setViewer(null), []);
+
   /**
    * Opens one, through a signed link.
    *
    * Both buttons on every row were `Pressable`s with no `onPress` — they
    * rendered, they pressed, and nothing happened, on a screen whose entire
-   * purpose is getting at the paperwork.
+   * purpose is getting at the paperwork. An image opens in-app in the viewer
+   * below; a PDF, which has no in-app renderer, still hands off to the OS.
    */
-  const viewDocument = useCallback(async (id: string) => {
-    setOpeningDoc(id);
-    try {
-      await openExternalUrl(await documentService.downloadUrl(id));
-    } catch (failure) {
-      Alert.alert(
-        'Could not open it',
-        failure instanceof Error
-          ? failure.message
-          : 'That document is not available.',
-      );
-    } finally {
-      setOpeningDoc(null);
-    }
-  }, []);
+  const viewDocument = useCallback(
+    async (id: string, name: string, isImage: boolean) => {
+      setOpeningDoc(id);
+      try {
+        const url = await documentService.downloadUrl(id);
+        if (isImage) {
+          setViewer({ uri: url, title: name });
+        } else {
+          await openExternalUrl(url);
+        }
+      } catch (failure) {
+        Alert.alert(
+          'Could not open it',
+          failure instanceof Error
+            ? failure.message
+            : 'That document is not available.',
+        );
+      } finally {
+        setOpeningDoc(null);
+      }
+    },
+    [],
+  );
 
   /**
    * Hands the link to the system share sheet.
@@ -369,7 +390,9 @@ export const DocumentsScreen: React.FC = () => {
                       and an operator needs to see that it is missing.
                     */}
                     <Pressable
-                      onPress={() => viewDocument(file.id)}
+                      onPress={() =>
+                        viewDocument(file.id, file.name, file.isImage)
+                      }
                       disabled={!file.hasFile || openingDoc !== null}
                       accessibilityRole="button"
                       accessibilityLabel={
@@ -422,6 +445,14 @@ export const DocumentsScreen: React.FC = () => {
           </Card>
         ))}
       </Content>
+
+      {/* An image document, read inside the app. */}
+      <ImageViewerModal
+        visible={viewer !== null}
+        uri={viewer?.uri}
+        title={viewer?.title}
+        onClose={closeViewer}
+      />
     </Screen>
   );
 };

@@ -23,6 +23,7 @@ import {
   Footer,
   Icon,
   IconWell,
+  ImageViewerModal,
   ListState,
   RadialGlow,
   RouteView,
@@ -39,6 +40,7 @@ import { tripService, vehicleService } from '@services/fleet.service';
 import type { AdminVehicle } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
 import { openExternalUrl } from '@utils/openExternalUrl';
+import { isImageDoc } from '@utils/mediaUrl';
 
 /**
  * Screen 7 — Vehicle Details.
@@ -79,6 +81,9 @@ function specsOf(vehicle: AdminVehicle | null): Array<{ label: string; value: st
 
 type DocRow = {
   id: string;
+  /** The document's kind (`RC` / `INS` / `FIT` / `PUC`) — carried so the row's
+   *  edit button can open Upload Document for this paper directly. */
+  kind: string;
   name: string;
   meta: string;
   metaTone: 'muted' | 'danger';
@@ -87,6 +92,15 @@ type DocRow = {
   color: string;
   /** Whether a scan is stored, as opposed to only an expiry being recorded. */
   hasFile: boolean;
+  /** Whether that scan is an image (opens in-app) rather than a PDF (opens out). */
+  isImage: boolean;
+  /**
+   * The back of the card, filed as its own `${kind}_BACK` record. The list
+   * still shows one row per paper — the back rides along on the front's row and
+   * opens beside it — so these are only set when a back scan is on file.
+   */
+  backId?: string;
+  backIsImage?: boolean;
 };
 
 /** A pending decision or outcome shown by the dialog at the foot of the screen. */
@@ -150,35 +164,52 @@ function docsOf(vehicle: AdminVehicle | null): DocRow[] {
       }>)
     : [];
 
-  return documents.map(doc => {
-    const kind = String(doc.kind ?? '').toUpperCase();
-    const health = String(doc.health ?? '').toUpperCase();
-    const skin = DOC_SKIN[health] ?? DOC_SKIN.EXPIRING;
-    const named = DOC_LABEL[kind] ?? { name: kind || 'Document', icon: 'file-text' as IconName };
+  // One row per front paper. A back scan is its own `${kind}_BACK` record, not a
+  // row of its own — it is paired onto the front below, so the list still shows
+  // the four papers rather than eight halves.
+  return documents
+    .filter(doc => !String(doc.kind ?? '').toUpperCase().endsWith('_BACK'))
+    .map(doc => {
+      const kind = String(doc.kind ?? '').toUpperCase();
+      const health = String(doc.health ?? '').toUpperCase();
+      const skin = DOC_SKIN[health] ?? DOC_SKIN.EXPIRING;
+      const named = DOC_LABEL[kind] ?? { name: kind || 'Document', icon: 'file-text' as IconName };
 
-    const expires = doc.expiresAt ? new Date(doc.expiresAt) : null;
-    const readable =
-      expires && !Number.isNaN(expires.getTime())
-        ? expires.toLocaleDateString('en-IN', {
-            day: 'numeric',
-            month: 'short',
-            year: 'numeric',
-          })
-        : null;
+      const expires = doc.expiresAt ? new Date(doc.expiresAt) : null;
+      const readable =
+        expires && !Number.isNaN(expires.getTime())
+          ? expires.toLocaleDateString('en-IN', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : null;
 
-    return {
-      id: String(doc.id ?? kind),
-      name: named.name,
-      // A paper with no expiry on file says so, rather than showing a blank.
-      meta: readable ? `Valid till ${readable}` : 'Not uploaded yet',
-      metaTone: skin.metaTone,
-      icon: named.icon,
-      // The colour *is* the health now — see the key under the list.
-      bg: skin.tint,
-      color: skin.tone,
-      hasFile: Boolean(doc.fileUrl),
-    };
-  });
+      // The matching back scan, when one has been filed — so the eye can open
+      // front and back together.
+      const backDoc = documents.find(
+        row => String(row.kind ?? '').toUpperCase() === `${kind}_BACK` && row.fileUrl,
+      );
+
+      return {
+        id: String(doc.id ?? kind),
+        kind,
+        name: named.name,
+        // A paper with no expiry on file says so, rather than showing a blank.
+        meta: readable ? `Valid till ${readable}` : 'Not uploaded yet',
+        metaTone: skin.metaTone,
+        icon: named.icon,
+        // The colour *is* the health now — see the key under the list.
+        bg: skin.tint,
+        color: skin.tone,
+        hasFile: Boolean(doc.fileUrl),
+        // Decided off the stored path's extension, so the eye knows before it
+        // even fetches the link whether to open a viewer or leave the app.
+        isImage: isImageDoc(doc.fileUrl),
+        backId: backDoc ? String(backDoc.id) : undefined,
+        backIsImage: backDoc ? isImageDoc(backDoc.fileUrl) : undefined,
+      };
+    });
 }
 
 export const VehicleDetailsScreen: React.FC = () => {
@@ -286,23 +317,53 @@ export const VehicleDetailsScreen: React.FC = () => {
     }
   }, [navigation, trip]);
 
-  /** Editing reuses the Add Vehicle form — same fields, prefilled upstream. */
+  /**
+   * Editing reuses the Add Vehicle form.
+   *
+   * The id is what tells that screen to open in edit mode — it fetches this
+   * vehicle, prefills every field, and saves as an update. Navigating with no
+   * params, as this used to, opened a blank form that would have *created* a
+   * second truck instead of editing this one.
+   */
   const editVehicle = useCallback(
-    () => navigation.navigate('AddVehicle'),
-    [navigation],
+    () => navigation.navigate('AddVehicle', { vehicleId }),
+    [navigation, vehicleId],
   );
 
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const closeDialog = useCallback(() => setDialog(null), []);
 
-  /** Adding a new scan is still a separate action from reading one. */
-  const uploadDocument = useCallback(
-    () =>
+  /**
+   * The scan currently open in the in-app image viewer, if any.
+   *
+   * A list of sides rather than a single image: a card filed with both faces
+   * opens as a front/back pager, and one filed with only a front is simply a
+   * pager of one.
+   */
+  const [viewer, setViewer] = useState<{
+    images: Array<{ uri: string; label: string }>;
+    title: string;
+  } | null>(null);
+  const closeViewer = useCallback(() => setViewer(null), []);
+
+  /*
+   * Filing a document.
+   *
+   * Each row's edit (pencil) opens Upload Document for that paper directly — the
+   * row already *is* the RC, the insurance, the fitness or the PUC, so there is
+   * no type to pick first. A vehicle is created with all four rows, so every
+   * paper is reachable this way and the old type-chooser sheet is gone.
+   */
+  const editDocument = useCallback(
+    (kind: string, kindLabel: string) => {
       navigation.navigate('UploadDocument', {
         ownerId: vehicleId,
         ownerLabel: registration,
-      }),
+        kind,
+        kindLabel,
+      });
+    },
     [navigation, registration, vehicleId],
   );
 
@@ -312,10 +373,11 @@ export const VehicleDetailsScreen: React.FC = () => {
    * The eye navigated to the *upload* screen, so the one thing an operator
    * could not do from a list of paperwork was read it. It fetches a signed
    * link now — `/uploads/*` is guarded and the system viewer sends no bearer
-   * token — and hands that to the OS.
+   * token. An image opens in-app in the viewer below; a PDF, which has no
+   * in-app renderer, still hands off to the OS.
    */
   const viewDocument = useCallback(
-    async (id: string, name: string, hasFile: boolean) => {
+    async (doc: DocRow) => {
       /*
        * Nothing filed yet is an answer, not a dead button.
        *
@@ -323,7 +385,7 @@ export const VehicleDetailsScreen: React.FC = () => {
        * out. "There is no scan on file" is precisely what they need to hear,
        * and the useful next step is offered in the same breath.
        */
-      if (!hasFile) {
+      if (!doc.hasFile) {
         /*
          * View only views.
          *
@@ -336,7 +398,7 @@ export const VehicleDetailsScreen: React.FC = () => {
         setDialog({
           tone: 'gold',
           icon: 'file-text',
-          title: name,
+          title: doc.name,
           message:
             'No scan has been filed against this document yet. Use the edit (pencil) button on this row to upload one.',
           confirmLabel: 'Got it',
@@ -345,9 +407,37 @@ export const VehicleDetailsScreen: React.FC = () => {
         return;
       }
 
-      setOpeningDoc(id);
+      setOpeningDoc(doc.id);
       try {
-        await openExternalUrl(await vehicleService.documentUrl(id));
+        /*
+         * The image sides to read in-app: the front when it is an image, and
+         * the back when one is filed and it too is an image. A PDF has no in-app
+         * renderer, so a side that is one is left out of the pager.
+         */
+        const sides: Array<{ id: string; label: string }> = [];
+        if (doc.isImage) {
+          sides.push({ id: doc.id, label: 'Front' });
+        }
+        if (doc.backId && doc.backIsImage) {
+          sides.push({ id: doc.backId, label: 'Back' });
+        }
+
+        if (sides.length > 0) {
+          // One signed link per side, fetched together — the viewer re-roots
+          // each onto the reachable host itself.
+          const images = await Promise.all(
+            sides.map(async side => ({
+              uri: await vehicleService.documentUrl(side.id),
+              label: side.label,
+            })),
+          );
+          setViewer({ images, title: doc.name });
+        } else {
+          // A PDF front with no image side — hand it to the OS, which has the
+          // renderer the app does not.
+          const url = await vehicleService.documentUrl(doc.id);
+          await openExternalUrl(url);
+        }
       } catch (failure) {
         setDialog({
           tone: 'danger',
@@ -645,7 +735,7 @@ export const VehicleDetailsScreen: React.FC = () => {
                 filing one for the first time, without leaving the vehicle.
               */}
               <Pressable
-                onPress={uploadDocument}
+                onPress={() => editDocument(doc.kind, doc.name)}
                 accessibilityRole="button"
                 accessibilityLabel={`Edit ${doc.name}`}
                 style={({ pressed }) => [styles.eye, pressed && styles.pressed]}
@@ -663,7 +753,7 @@ export const VehicleDetailsScreen: React.FC = () => {
                 404 or — worse — doing nothing at all.
               */}
               <Pressable
-                onPress={() => viewDocument(doc.id, doc.name, doc.hasFile)}
+                onPress={() => viewDocument(doc)}
                 disabled={openingDoc !== null}
                 accessibilityRole="button"
                 accessibilityLabel={`View ${doc.name}`}
@@ -731,6 +821,15 @@ export const VehicleDetailsScreen: React.FC = () => {
         cancelLabel={dialog?.cancelLabel}
         onConfirm={() => dialog?.onConfirm()}
         onCancel={closeDialog}
+      />
+
+      {/* The image sides — front, and the back when one is filed — read inside
+          the app as a swipeable pager. */}
+      <ImageViewerModal
+        visible={viewer !== null}
+        images={viewer?.images}
+        title={viewer?.title}
+        onClose={closeViewer}
       />
     </Screen>
   );
