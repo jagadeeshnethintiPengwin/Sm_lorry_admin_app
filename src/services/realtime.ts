@@ -27,6 +27,7 @@ export type LiveNotification = {
   title: string;
   detail: string;
   link?: string | null;
+  imageUrl?: string | null;
 };
 
 type Listener = (notification: LiveNotification) => void;
@@ -58,7 +59,10 @@ export function connectRealtime(): void {
    */
   socket = io(API_ORIGIN, {
     path: '/realtime',
-    transports: ['websocket'],
+    // WebSocket first, polling kept as a fallback: some networks/emulators
+    // block the WS upgrade while HTTP works, and a websocket-only client then
+    // silently never connects — which reads as "notifications don't work".
+    transports: ['websocket', 'polling'],
     auth: { token },
     // The office leaves the panel open all day; a dropped Wi-Fi should heal.
     reconnection: true,

@@ -183,10 +183,31 @@ export const authService = {
     return data;
   },
 
-  /** PUT /owner/profile — the Business Details form. */
+  /** PUT /owner/profile — the signed-in account's own name / mobile / email. */
   async updateProfile(payload: Partial<OwnerProfile>): Promise<OwnerProfile> {
     const { data } = await apiClient.put<OwnerProfile>('/owner/profile', payload);
     return data;
+  },
+
+  /**
+   * PUT /settings/company — the Business Details form.
+   *
+   * The company profile (name, GSTIN, address, support contact) is a settings
+   * section, not part of the personal account, so it saves here rather than
+   * through `/owner/profile` — the same endpoint the web panel's Settings →
+   * Company Profile writes to. `GET /owner/profile` reads it back under
+   * `company`, which is how the form reloads.
+   */
+  async updateCompany(company: {
+    name?: string;
+    gstin?: string;
+    email?: string;
+    mobile?: string;
+    address?: string;
+    city?: string;
+    state?: string;
+  }): Promise<void> {
+    await apiClient.put('/settings/company', company);
   },
 
   /**

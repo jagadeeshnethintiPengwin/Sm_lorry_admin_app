@@ -9,6 +9,7 @@ import {
   AppHeader,
   Button,
   Card,
+  ConfirmDialog,
   Content,
   Icon,
   IconWell,
@@ -106,10 +107,10 @@ export const CustomerDetailsScreen: React.FC = () => {
 
   const openTrips = useCallback(() => navigation.navigate('Trips'), [navigation]);
 
-  /** Editing reuses the Add Customer form — same fields, prefilled upstream. */
+  /** Editing reuses the Add Customer form in edit mode — prefilled from the id. */
   const editCustomer = useCallback(
-    () => navigation.navigate('AddCustomer'),
-    [navigation],
+    () => navigation.navigate('AddCustomer', { customerId }),
+    [navigation, customerId],
   );
 
   /** Bookings are raised from the Bookings tab, same as the dashboard action. */
@@ -136,6 +137,31 @@ export const CustomerDetailsScreen: React.FC = () => {
     },
     [customerId, refetch],
   );
+
+  /*
+   * Removing an account — the same delete the web panel has. The API refuses it
+   * while trips still reference the customer, so a failure is shown rather than
+   * swallowed. Guarded behind a confirm because it cannot be undone.
+   */
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const removeCustomer = useCallback(async () => {
+    setConfirmDelete(false);
+    setDeleting(true);
+    try {
+      await customerService.remove(customerId);
+      navigation.goBack();
+    } catch (failure) {
+      setErrorMsg(
+        failure instanceof Error
+          ? failure.message
+          : 'This customer could not be removed. They may still have trips on file.',
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }, [customerId, navigation]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -443,7 +469,56 @@ export const CustomerDetailsScreen: React.FC = () => {
             onPress={newBooking}
           />
         </View>
+
+        {/* Secondary actions — revoke a verified account's KYC, or remove it.
+            The office needs both, the same as the web panel. */}
+        <View style={styles.secondaryActions}>
+          {verified ? (
+            <Button
+              label={verifying ? 'Working…' : 'Un-verify'}
+              variant="outline"
+              icon="shield-off"
+              flex={1}
+              loading={verifying}
+              disabled={verifying}
+              onPress={() => verifyAccount(false)}
+            />
+          ) : null}
+          <Button
+            label={deleting ? 'Removing…' : 'Delete'}
+            variant="outline"
+            icon="trash-2"
+            color={palette.red}
+            borderColor={palette.redSoft}
+            flex={1}
+            loading={deleting}
+            disabled={deleting}
+            onPress={() => setConfirmDelete(true)}
+          />
+        </View>
       </Content>
+
+      <ConfirmDialog
+        visible={confirmDelete}
+        tone="danger"
+        icon="trash-2"
+        title="Delete this customer?"
+        message="Their account will be removed. This cannot be undone, and is refused while they still have trips on file."
+        confirmLabel="Delete"
+        onConfirm={removeCustomer}
+        onCancel={() => setConfirmDelete(false)}
+      />
+
+      <ConfirmDialog
+        visible={errorMsg !== null}
+        tone="danger"
+        icon="alert-circle"
+        title="Could not remove"
+        message={errorMsg ?? ''}
+        confirmLabel="Close"
+        onConfirm={() => setErrorMsg(null)}
+        onCancel={() => setErrorMsg(null)}
+      />
     </Screen>
   );
 };
@@ -648,6 +723,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: s(8),
     paddingTop: s(14),
+    paddingHorizontal: s(12),
+    paddingBottom: s(10),
+  },
+  secondaryActions: {
+    flexDirection: 'row',
+    gap: s(8),
     paddingHorizontal: s(12),
     paddingBottom: s(20),
   },

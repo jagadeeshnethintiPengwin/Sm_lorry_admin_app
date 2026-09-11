@@ -13,7 +13,9 @@ export type TabParamList = {
    * the approval had worked. The decision screen names the bucket its outcome
    * landed in, so the result is on screen when they arrive.
    */
-  Bookings: { tab?: 'pending' | 'approved' | 'rejected' } | undefined;
+  Bookings:
+    | { tab?: 'pending' | 'approved' | 'completed' | 'cancelled' | 'rejected' }
+    | undefined;
   Menu: undefined;
 };
 
@@ -105,12 +107,12 @@ export type RootStackParamList = {
   AddDriver: { driverId?: string } | undefined;
   Customers: undefined;
   CustomerDetails: { customerId: string };
-  AddCustomer: undefined;
+  AddCustomer: { customerId?: string } | undefined;
 
   // Bookings & trips
   BookingReview: { bookingId: string };
   Trips: undefined;
-  NewTrip: undefined;
+  NewTrip: { driverId?: string; vehicleId?: string } | undefined;
   TripDetails: { tripId: string };
   ReassignTrip: { tripId: string };
   UpdateTripStatus: { tripId: string };

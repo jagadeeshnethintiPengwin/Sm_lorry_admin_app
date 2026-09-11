@@ -2,7 +2,99 @@ import Share from 'react-native-share';
 import { generatePDF } from 'react-native-html-to-pdf';
 import * as XLSX from 'xlsx';
 
-import type { AdminDocument, TripFinance } from './fleet.service';
+import { API_ORIGIN } from './api.client';
+import { session } from './storage';
+import { resolveMediaUrl } from '@utils/mediaUrl';
+import type { AdminDocument, Halt, TripFinance } from './fleet.service';
+import type { LatLng } from '@components/common/TripMap';
+
+/**
+ * The trip's endpoints and halts, passed alongside the trip so the report can
+ * draw the route map and list where the lorry stopped — the two things the web
+ * admin's PDF carries that the trip record alone does not.
+ */
+export type ReportExtras = {
+  halts?: Halt[];
+  pickup?: LatLng | null;
+  drop?: LatLng | null;
+};
+
+/**
+ * The Google Maps key, the same one the app already ships for the map screens
+ * (Android manifest / `local.properties`). Static Maps is a plain image URL, so
+ * the key is needed here to build it; it is the shared, unrestricted key the web
+ * admin uses for the identical map, and it is already inside the APK.
+ */
+const GOOGLE_MAPS_KEY = 'AIzaSyDn-M8VnCfac-jhsD2kWznKHyMizvvVfgk';
+
+/**
+ * A Google Static Maps URL of the trip's path — a navy "P" pin at pickup, a red
+ * "D" flag at the drop, a gold line between them and a small amber marker at
+ * each halt — auto-centred to fit. Mirrors the web admin's `tripMapImageUrl`.
+ * Null when there is nothing to plot.
+ */
+function staticMapUrl(
+  pickup: LatLng | null | undefined,
+  drop: LatLng | null | undefined,
+  halts: Halt[],
+): string | null {
+  if (!pickup && !drop && halts.length === 0) {
+    return null;
+  }
+  const enc = encodeURIComponent;
+  const parts: string[] = ['size=640x400', 'scale=2', 'maptype=roadmap'];
+  if (pickup) {
+    parts.push(
+      `markers=${enc(`color:0x0d2647|label:P|${pickup.latitude},${pickup.longitude}`)}`,
+    );
+  }
+  if (drop) {
+    parts.push(
+      `markers=${enc(`color:0xdc2626|label:D|${drop.latitude},${drop.longitude}`)}`,
+    );
+  }
+  if (pickup && drop) {
+    parts.push(
+      `path=${enc(
+        `color:0xf5a623ff|weight:4|${pickup.latitude},${pickup.longitude}|${drop.latitude},${drop.longitude}`,
+      )}`,
+    );
+  }
+  if (halts.length) {
+    const points = halts.map(h => `${h.lat},${h.lng}`).join('|');
+    parts.push(`markers=${enc(`size:small|color:0xf97316|${points}`)}`);
+  }
+  parts.push(`key=${enc(GOOGLE_MAPS_KEY)}`);
+  return `https://maps.googleapis.com/maps/api/staticmap?${parts.join('&')}`;
+}
+
+/**
+ * The fetchable source for a report picture.
+ *
+ * Our own guarded `/uploads` files need the session bearer; a public CDN photo
+ * or the Google static map must be fetched plain, since attaching a header to a
+ * signed or third-party link can break it. So the token is added only for a URL
+ * that resolves onto our own API origin.
+ */
+function reportImageSource(url: string): {
+  uri: string;
+  headers?: Record<string, string>;
+} {
+  const uri = resolveMediaUrl(url) ?? url;
+  const token = session.getToken();
+  return uri.startsWith(API_ORIGIN) && token
+    ? { uri, headers: { Authorization: `Bearer ${token}` } }
+    : { uri };
+}
+
+/** `1h 05m` / `45 min` — a halt's duration, read for the report. */
+function haltDuration(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) {
+    return `${m} min`;
+  }
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+}
 
 /**
  * Trip report exports — the mobile twin of the web admin's
@@ -174,7 +266,9 @@ export function buildTripSections(
   finance: TripFinance | null,
   photos: PodPhoto[],
   otherDocs: TripDoc[],
+  extras: ReportExtras = {},
 ): ReportSection[] {
+  const halts = extras.halts ?? [];
   const b: Record<string, any> = trip.booking ?? {};
   const distance = Number(trip.distanceKm || b.distanceKm || 0);
   const covered = Number(trip.coveredKm ?? 0);
@@ -199,7 +293,7 @@ export function buildTripSections(
   }
   financeRows.push(row('Received', rupees(finance?.received ?? 0)));
   financeRows.push(row('Balance due', rupees(finance?.balance ?? finRevenue)));
-  (finance?.payments.items ?? []).forEach(p =>
+  (finance?.payments?.items ?? []).forEach(p =>
     financeRows.push(
       row(
         `Payment · ${dateOf(p.paidAt)} · ${p.mode}`,
@@ -208,7 +302,7 @@ export function buildTripSections(
     ),
   );
   financeRows.push(row('Trip expenses', rupees(finance?.expenses ?? 0)));
-  (finance?.costs.items ?? []).forEach(e =>
+  (finance?.costs?.items ?? []).forEach(e =>
     financeRows.push(
       row(
         `Expense · ${dateOf(e.spentAt)} · ${e.category}`,
@@ -338,6 +432,42 @@ export function buildTripSections(
         : [row('—', 'No events recorded.')],
     },
     {
+      title: 'Location',
+      rows: [
+        row(
+          'Pickup',
+          extras.pickup
+            ? `${extras.pickup.latitude.toFixed(5)}, ${extras.pickup.longitude.toFixed(5)}`
+            : '—',
+        ),
+        row(
+          'Drop',
+          extras.drop
+            ? `${extras.drop.latitude.toFixed(5)}, ${extras.drop.longitude.toFixed(5)}`
+            : '—',
+        ),
+      ],
+    },
+    {
+      title: `Halts (${halts.length})`,
+      rows: halts.length
+        ? halts.map((h, i) =>
+            row(
+              `Halt ${i + 1}${h.place ? ` · ${h.place}` : ''}`,
+              [
+                h.reason ? h.reason : null,
+                timeOf(h.startedAt),
+                haltDuration(h.minutes),
+                h.ongoing ? 'ongoing' : null,
+                h.note ? `— ${h.note}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · '),
+            ),
+          )
+        : [row('—', 'No long stops recorded.')],
+    },
+    {
       title: `Documents (${photos.length + otherDocs.length})`,
       rows:
         photos.length || otherDocs.length
@@ -380,7 +510,23 @@ async function shareFile(options: {
   filename?: string;
 }): Promise<void> {
   try {
-    await Share.open({ failOnCancel: false, ...options });
+    /*
+     * `useInternalStorage` is what makes a generated file shareable at all.
+     *
+     * react-native-share writes the file behind a data URL to a temp path and
+     * then hands it out through its own FileProvider. Its roots cover only the
+     * app's INTERNAL cache and the public Downloads folder — not the external
+     * cache it writes to by default. So the default path lands in
+     * `Android/data/…/cache/Download/…`, `compatUriFromFile` finds no matching
+     * root and returns null, and the share crashes on `Uri.getScheme()` of
+     * null. Writing to internal storage puts the file under the `<cache-path>`
+     * root the provider does declare, and the share goes through.
+     */
+    await Share.open({
+      failOnCancel: false,
+      useInternalStorage: true,
+      ...options,
+    });
   } catch (failure) {
     const message =
       failure instanceof Error ? failure.message : String(failure);
@@ -403,9 +549,10 @@ export async function exportTripExcel(
   trip: TripLike,
   finance: TripFinance | null,
   docs: AdminDocument[],
+  extras: ReportExtras = {},
 ): Promise<void> {
   const { photos, otherDocs } = splitTripDocs(docs);
-  const sections = buildTripSections(trip, finance, photos, otherDocs);
+  const sections = buildTripSections(trip, finance, photos, otherDocs, extras);
   const title = `SMT Simhadri Transport — Trip #${trip.reference ?? trip.id ?? ''}`;
 
   const aoa: string[][] = [[title], []];
@@ -425,9 +572,60 @@ export async function exportTripExcel(
 
   await shareFile({
     url: `data:${XLSX_MIME};base64,${base64}`,
-    filename: `SMT-Trip-${safeRef(trip)}.xlsx`,
+    // No extension: react-native-share appends one derived from the mime type,
+    // so `...xlsx` here would be written out as `...xlsx.xlsx`.
+    filename: `SMT-Trip-${safeRef(trip)}`,
     type: XLSX_MIME,
   });
+}
+
+/**
+ * Fetches an image and returns it as a `data:` URI, or null if it will not come.
+ *
+ * The PDF embeds the trip's photos and scans. Left as remote `<img src>` tags,
+ * the PDF renderer loads them itself over the network while it converts — and on
+ * a lorry-yard connection that stalls, the whole conversion hits its thirty-
+ * second ceiling and fails, taking the report with it. Fetching each picture
+ * here first, with a short deadline, moves that risk out of the renderer: an
+ * image that loads is inlined so the conversion touches no network, and one that
+ * does not is dropped so a single slow file cannot sink the report.
+ */
+async function toDataUri(url: string, timeoutMs = 8000): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const { uri, headers } = reportImageSource(url);
+    const response = await fetch(uri, { signal: controller.signal, headers });
+    if (!response.ok) {
+      return null;
+    }
+    const blob = await response.blob();
+    return await new Promise<string | null>(resolve => {
+      const reader = new FileReader();
+      reader.onloadend = () =>
+        resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Inlines what it can of the report's pictures, dropping any that will not load. */
+async function inlineReportImages(
+  images: ReportImage[],
+): Promise<ReportImage[]> {
+  const inlined: ReportImage[] = [];
+  for (const image of images) {
+    const dataUri = await toDataUri(image.url);
+    if (dataUri) {
+      inlined.push({ caption: image.caption, url: dataUri });
+    }
+  }
+  return inlined;
 }
 
 /** One `<td>`-safe string. */
@@ -448,6 +646,7 @@ function buildReportHtml(
   title: string,
   sections: ReportSection[],
   images: ReportImage[],
+  mapDataUri: string | null,
 ): string {
   const sectionsHtml = sections
     .map(
@@ -465,6 +664,12 @@ function buildReportHtml(
       </table>`,
     )
     .join('');
+
+  // The route map — pickup, drop, the line between and each halt — as its own
+  // figure, the way the web admin's PDF opens on the map.
+  const mapHtml = mapDataUri
+    ? `<h2>Route Map</h2><div class="map"><img src="${mapDataUri}" /></div>`
+    : '';
 
   const imagesHtml = images.length
     ? `<h2>Photos &amp; Scans</h2>${images
@@ -508,12 +713,14 @@ function buildReportHtml(
         td.label { width: 32%; color: #64748b; font-weight: 600; }
         .photo { margin: 12px 0; page-break-inside: avoid; }
         .caption { font-weight: 700; margin-bottom: 4px; }
+        .map { margin: 6px 0 4px; page-break-inside: avoid; }
         img { max-width: 100%; border-radius: 6px; }
       </style>
     </head>
     <body>
       <h1>${esc(title)}</h1>
       <div class="meta">Generated ${esc(new Date().toLocaleString('en-IN'))}</div>
+      ${mapHtml}
       ${sectionsHtml}
       ${imagesHtml}
     </body>
@@ -531,25 +738,53 @@ export async function exportTripPdf(
   trip: TripLike,
   finance: TripFinance | null,
   docs: AdminDocument[],
+  extras: ReportExtras = {},
 ): Promise<void> {
+  const halts = extras.halts ?? [];
   const { photos, otherDocs } = splitTripDocs(docs);
-  const sections = buildTripSections(trip, finance, photos, otherDocs);
-  const images = tripReportImages(photos, otherDocs);
-  const title = `Trip #${trip.reference ?? trip.id ?? ''}`;
-  const html = buildReportHtml(title, sections, images);
+  const sections = buildTripSections(trip, finance, photos, otherDocs, extras);
 
+  // The trip's pictures: its delivery photos and document scans, then a shot
+  // from each halt. All fetched and inlined up front, so the renderer never
+  // waits on the network (which is what timed the conversion out before).
+  const haltImages: ReportImage[] = halts.flatMap((h, i) =>
+    (h.photos ?? []).map(url => ({
+      caption: `Halt ${i + 1}${h.place ? ` · ${h.place}` : ''}`,
+      url,
+    })),
+  );
+  const images = await inlineReportImages([
+    ...tripReportImages(photos, otherDocs),
+    ...haltImages,
+  ]);
+
+  // The route map, fetched the same way and drawn at the top of the report.
+  const mapUrl = staticMapUrl(extras.pickup, extras.drop, halts);
+  const mapDataUri = mapUrl ? await toDataUri(mapUrl, 12000) : null;
+
+  const title = `Trip #${trip.reference ?? trip.id ?? ''}`;
+  const html = buildReportHtml(title, sections, images, mapDataUri);
+
+  /*
+   * Base64 rather than a file path, shared as a data URL the same way the Excel
+   * is. A `file://` from the PDF library points into its own directory, which
+   * is not one of the roots react-native-share's FileProvider declares, so
+   * sharing it fails the same way the spreadsheet did; a data URL routes through
+   * the internal-storage path that does work.
+   */
   const result = await generatePDF({
     html,
     fileName: `SMT-Trip-${safeRef(trip)}`,
-    base64: false,
+    base64: true,
   });
 
-  if (!result.filePath) {
+  if (!result.base64) {
     throw new Error('The report PDF could not be created.');
   }
 
   await shareFile({
-    url: `file://${result.filePath}`,
+    url: `data:application/pdf;base64,${result.base64}`,
+    filename: `SMT-Trip-${safeRef(trip)}`,
     type: 'application/pdf',
   });
 }

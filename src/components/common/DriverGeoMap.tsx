@@ -4,6 +4,7 @@ import type { StyleProp, ViewStyle } from 'react-native';
 import MapView, {
   type MapType,
   Marker,
+  Polyline,
   PROVIDER_GOOGLE,
   PROVIDER_DEFAULT,
   Region,
@@ -15,6 +16,7 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import { font } from '@theme/fonts';
+import type { Halt } from '@services/fleet.service';
 
 /**
  * Driver-and-lorry map for the detail screens — the phone twin of the web
@@ -38,6 +40,21 @@ export type DriverGeoMapProps = {
   driver?: { position: GeoPoint; name: string; onTrip?: boolean } | null;
   /** The lorry's fix + its plate. */
   vehicle?: { position: GeoPoint; reg: string } | null;
+  /**
+   * The consignment's endpoints. When both are given the map draws the journey
+   * over the live fix — a navy pin at the pickup, a red flag at the drop, and
+   * the road between them — so a detail screen shows the whole trip, not just
+   * where the lorry is right now. Omitted on the driver/vehicle detail screens,
+   * which only care about the live position.
+   */
+  pickup?: GeoPoint | null;
+  drop?: GeoPoint | null;
+  /** The real road pickup→drop, decoded from the directions polyline. Falls
+   *  back to a straight line between the two ends when absent. */
+  routeCoordinates?: GeoPoint[];
+  /** Where the lorry sat still too long — an amber pause pin at each (red while
+   *  it is still stopped), tagged with the place. */
+  halts?: Halt[];
   /** Fixed height for the card preview; omit to fill the parent (full screen). */
   height?: number;
   /**
@@ -74,6 +91,10 @@ function initialsOf(name: string): string {
 const DriverGeoMapComponent: React.FC<DriverGeoMapProps> = ({
   driver,
   vehicle,
+  pickup,
+  drop,
+  routeCoordinates,
+  halts,
   height,
   interactive = false,
   onPress,
@@ -81,12 +102,31 @@ const DriverGeoMapComponent: React.FC<DriverGeoMapProps> = ({
 }) => {
   const driverPos = driver?.position ?? null;
   const vehiclePos = vehicle?.position ?? null;
+  const pickupPos = pickup ?? null;
+  const dropPos = drop ?? null;
+  // The journey is drawn only when both ends are known; otherwise the map is
+  // just the live driver/vehicle, exactly as before.
+  const hasRoute = pickupPos != null && dropPos != null;
+  const path: GeoPoint[] | null = hasRoute
+    ? routeCoordinates && routeCoordinates.length > 1
+      ? routeCoordinates
+      : [pickupPos!, dropPos!]
+    : null;
 
   const mapRef = useRef<MapView | null>(null);
   const [mapType, setMapType] = useState<MapType>('standard');
 
+  // Everything the map should frame — the live fixes and the trip's endpoints.
+  const framePoints = useMemo<GeoPoint[]>(
+    () =>
+      [driverPos, vehiclePos, pickupPos, dropPos].filter(
+        (p): p is GeoPoint => Boolean(p),
+      ),
+    [driverPos, vehiclePos, pickupPos, dropPos],
+  );
+
   const region = useMemo<Region>(() => {
-    const pts = [driverPos, vehiclePos].filter(Boolean) as GeoPoint[];
+    const pts = framePoints;
     if (pts.length === 0) {
       // Nothing to show — a neutral region behind the "not reported" panel.
       return {
@@ -108,7 +148,7 @@ const DriverGeoMapComponent: React.FC<DriverGeoMapProps> = ({
       latitudeDelta: Math.max((maxLat - minLat) * 1.8, 0.02),
       longitudeDelta: Math.max((maxLng - minLng) * 1.8, 0.02),
     };
-  }, [driverPos, vehiclePos]);
+  }, [framePoints]);
 
   // When the driver and lorry share a point, nudge them a slice of the view
   // apart so neither hides the other. Purely to un-stack two markers that are
@@ -125,10 +165,10 @@ const DriverGeoMapComponent: React.FC<DriverGeoMapProps> = ({
     ? { latitude: vehiclePos.latitude, longitude: vehiclePos.longitude - spread }
     : null;
 
-  // Recentre (the full-screen map's button): frame both fixes again, or zoom to
-  // the single one, after the operator has panned away.
+  // Recentre (the full-screen map's button): frame the whole picture again —
+  // the live fixes and the trip's endpoints — after the operator has panned away.
   const recenter = useCallback(() => {
-    const pts = [driverPos, vehiclePos].filter(Boolean) as GeoPoint[];
+    const pts = framePoints;
     if (pts.length === 0) {
       return;
     }
@@ -148,12 +188,13 @@ const DriverGeoMapComponent: React.FC<DriverGeoMapProps> = ({
       edgePadding: { top: s(80), right: s(70), bottom: s(80), left: s(70) },
       animated: true,
     });
-  }, [driverPos, vehiclePos]);
+  }, [framePoints]);
 
   const sizeStyle = height != null ? { height } : styles.fill;
 
-  // Neither reporting — no map, just an honest panel.
-  if (!driverPos && !vehiclePos) {
+  // Nothing to draw — no live fix and no route — so an honest panel. When the
+  // trip has endpoints the map still draws, even before the lorry reports.
+  if (framePoints.length === 0) {
     return (
       <View style={[styles.wrap, styles.empty, sizeStyle, style]}>
         <Icon name="map-pin" size={20} color={palette.slate500} />
@@ -190,6 +231,88 @@ const DriverGeoMapComponent: React.FC<DriverGeoMapProps> = ({
         rotateEnabled={interactive}
         pitchEnabled={interactive}
       >
+        {/* The road pickup→drop — navy casing under a gold line — drawn under
+            everything else so the markers sit on top of it. */}
+        {path ? (
+          <>
+            <Polyline
+              coordinates={path}
+              strokeColor="rgba(13,38,71,0.35)"
+              strokeWidth={s(6)}
+              lineCap="round"
+            />
+            <Polyline
+              coordinates={path}
+              strokeColor={palette.gold}
+              strokeWidth={s(3)}
+              lineCap="round"
+            />
+          </>
+        ) : null}
+
+        {/* Pickup — navy pin. */}
+        {pickupPos ? (
+          <Marker coordinate={pickupPos} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={[styles.endMarker, styles.endPickup]}>
+              <Icon name="map-pin" size={15} color={palette.white} />
+            </View>
+          </Marker>
+        ) : null}
+
+        {/* Drop — red flag. */}
+        {dropPos ? (
+          <Marker coordinate={dropPos} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={[styles.endMarker, styles.endDrop]}>
+              <Icon name="flag" size={15} color={palette.white} />
+            </View>
+          </Marker>
+        ) : null}
+
+        {/* Halts — an amber pause pin for a stop already left, red while the
+            lorry is still parked there; each tagged with the place (its reason
+            leading it when the driver logged one), or the minutes when there is
+            no place. Drawn under the live puck so that stays on top. */}
+        {halts?.map(halt => {
+          const label = halt.place
+            ? halt.reason
+              ? `${halt.reason} · ${halt.place}`
+              : halt.place
+            : `${halt.minutes} min${halt.ongoing ? ' · now' : ''}`;
+          return (
+            <Marker
+              key={`${halt.lat},${halt.lng},${halt.startedAt}`}
+              coordinate={{ latitude: halt.lat, longitude: halt.lng }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+            >
+              <View style={styles.haltWrap}>
+                <View
+                  style={[
+                    styles.haltMarker,
+                    halt.ongoing ? styles.haltMarkerLive : styles.haltMarkerIdle,
+                  ]}
+                >
+                  <Icon
+                    name={halt.ongoing ? 'clock' : 'pause'}
+                    size={13}
+                    color={palette.white}
+                  />
+                </View>
+                <View
+                  style={[
+                    styles.haltTag,
+                    { backgroundColor: halt.ongoing ? palette.red : palette.gold },
+                  ]}
+                >
+                  <Text style={styles.haltTagText} numberOfLines={1}>
+                    {label}
+                  </Text>
+                </View>
+              </View>
+            </Marker>
+          );
+        })}
+
         {vehicleCoord && vehicle ? (
           <Marker coordinate={vehicleCoord} anchor={{ x: 0.5, y: 0.5 }}>
             <View style={styles.markerCol}>
@@ -345,6 +468,47 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   tagText: font(8, '800', { color: palette.white }),
+
+  // Trip endpoints — navy pickup pin, red drop flag.
+  endMarker: {
+    width: s(30),
+    height: s(30),
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: s(2),
+    borderColor: palette.white,
+    ...shadows.mapMarker,
+  },
+  endPickup: { backgroundColor: palette.navy },
+  endDrop: { backgroundColor: palette.red },
+
+  // Halt pins — the circle sits on the coordinate; the place tag hangs below,
+  // out of flow, so it never shoves the pin off the point.
+  haltWrap: { alignItems: 'center', justifyContent: 'center' },
+  haltMarker: {
+    width: s(28),
+    height: s(28),
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: s(2),
+    borderColor: palette.white,
+    ...shadows.mapMarker,
+  },
+  haltMarkerIdle: { backgroundColor: palette.gold },
+  haltMarkerLive: { backgroundColor: palette.red },
+  haltTag: {
+    position: 'absolute',
+    top: '100%',
+    marginTop: s(2),
+    maxWidth: s(150),
+    paddingVertical: s(1),
+    paddingHorizontal: s(5),
+    borderRadius: radius.sm,
+    ...shadows.subtle,
+  },
+  haltTagText: font(8, '800', { color: palette.white }),
 
   legend: {
     position: 'absolute',

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
@@ -12,6 +12,7 @@ import type { IconName } from '@components/common/Icon';
 import { notificationService } from '@services/fleet.service';
 import { useApi } from '@hooks/useApi';
 import { notificationTarget } from '@utils/notificationTarget';
+import { resolveMediaUrl } from '@utils/mediaUrl';
 import type { RootStackParamList } from '@navigation/types';
 
 /**
@@ -44,6 +45,8 @@ type Item = {
    * owner tapping "Booking Received" got nothing.
    */
   link?: string;
+  /** A picture the notification carries, shown below the message, or absent. */
+  imageUrl?: string | null;
 };
 
 /**
@@ -111,6 +114,7 @@ function toItem(row: Record<string, unknown>): Item & { bucket: Bucket } {
     tone: unread ? (category === 'BOOKINGS' ? 'gold' : 'navy') : 'plain',
     unread,
     link: typeof row.link === 'string' ? row.link : undefined,
+    imageUrl: typeof row.imageUrl === 'string' ? row.imageUrl : undefined,
     bucket: bucketOf(createdAt),
   };
 }
@@ -168,6 +172,10 @@ const Row: React.FC<{ item: Item; onOpen: (item: Item) => void }> = ({
 
   const Wrapper = target ? Pressable : View;
 
+  const imageUri = item.imageUrl
+    ? resolveMediaUrl(item.imageUrl) ?? item.imageUrl
+    : undefined;
+
   return (
     <Wrapper
       {...(target
@@ -183,29 +191,38 @@ const Row: React.FC<{ item: Item; onOpen: (item: Item) => void }> = ({
         railed ? styles.rowRailed : styles.rowPlain,
       ]}
     >
-      <View style={[styles.tile, { backgroundColor: tone.tileBg }]}>
-        <Icon name={item.icon} size={16} color={tone.tileColor} />
-      </View>
-
-      <View style={styles.body}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>{item.title}</Text>
-          {item.unread ? <View style={styles.dot} /> : null}
+      <View style={styles.topRow}>
+        <View style={[styles.tile, { backgroundColor: tone.tileBg }]}>
+          <Icon name={item.icon} size={16} color={tone.tileColor} />
         </View>
 
-        <Text style={[styles.text, { color: tone.body }]}>{item.body}</Text>
+        <View style={styles.body}>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>{item.title}</Text>
+            {item.unread ? <View style={styles.dot} /> : null}
+          </View>
 
+          <Text style={[styles.text, { color: tone.body }]}>{item.body}</Text>
 
-
-        <Text
-          style={[
-            tone.timeWeight === '800' ? styles.timeBold : styles.timeMedium,
-            { color: tone.time },
-          ]}
-        >
-          {item.time}
-        </Text>
+          <Text
+            style={[
+              tone.timeWeight === '800' ? styles.timeBold : styles.timeMedium,
+              { color: tone.time },
+            ]}
+          >
+            {item.time}
+          </Text>
+        </View>
       </View>
+
+      {/* The attached picture, below the message — as WhatsApp shows one. */}
+      {imageUri ? (
+        <Image
+          source={{ uri: imageUri }}
+          style={styles.bigImage}
+          resizeMode="cover"
+        />
+      ) : null}
     </Wrapper>
   );
 };
@@ -394,11 +411,17 @@ const styles = StyleSheet.create({
   groupGap: { marginTop: s(12) },
 
   row: {
-    flexDirection: 'row',
-    gap: s(10),
     padding: s(11),
     borderRadius: radius.card,
     marginBottom: s(6),
+  },
+  topRow: { flexDirection: 'row', gap: s(10) },
+  bigImage: {
+    width: '100%',
+    height: s(150),
+    borderRadius: radius.md,
+    marginTop: s(9),
+    backgroundColor: palette.navyTint,
   },
   rowRailed: { borderLeftWidth: s(3) },
   rowPlain: {

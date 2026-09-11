@@ -123,6 +123,8 @@ export type AdminNotification = {
   time: string;
   kind: 'booking' | 'trip' | 'document' | 'driver' | 'system';
   unread: boolean;
+  /** A picture the notification carries, shown below the message, or null. */
+  imageUrl?: string | null;
 };
 
 export type OwnerProfile = {

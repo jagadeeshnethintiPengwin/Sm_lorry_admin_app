@@ -1,10 +1,15 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { SlideInUp, SlideOutUp } from 'react-native-reanimated';
+import { AppState, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { getMessaging, onMessage } from '@react-native-firebase/messaging';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from './Icon';
+import { resolveMediaUrl } from '@utils/mediaUrl';
 import { watchPushToken } from '@services/push';
 import {
   connectRealtime,
@@ -35,6 +40,14 @@ const NotificationBannerComponent: React.FC<{
 }> = ({ onPress }) => {
   const insets = useSafeAreaInsets();
   const [current, setCurrent] = useState<LiveNotification | null>(null);
+  /*
+   * The slide is driven by a shared value, not reanimated's `entering`/`exiting`
+   * layout animations. Under the New Architecture those mount the banner but
+   * frequently never play — the view stays off-screen and the notification is
+   * silently missed. A shared value animated on the UI thread is reliable: 0 is
+   * tucked above the screen, 1 is in place.
+   */
+  const slide = useSharedValue(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /* The id on screen, so socket and push cannot show the same one twice. */
   const lastShown = useRef<string | null>(null);
@@ -124,6 +137,7 @@ const NotificationBannerComponent: React.FC<{
           title: notification.title,
           detail: notification.body ?? '',
           link: typeof data?.link === 'string' ? data.link : null,
+          imageUrl: typeof data?.imageUrl === 'string' ? data.imageUrl : null,
         });
       },
     );
@@ -154,16 +168,26 @@ const NotificationBannerComponent: React.FC<{
     };
   }, [show]);
 
+  // Slide in when a notification is on screen, out when it clears.
+  useEffect(() => {
+    slide.value = withTiming(current ? 1 : 0, {
+      duration: current ? 260 : 200,
+    });
+  }, [current, slide]);
+
+  const bannerStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: (slide.value - 1) * 120 }],
+    opacity: slide.value,
+  }));
+
   if (!current) {
     return null;
   }
 
   return (
     <Animated.View
-      entering={SlideInUp.duration(260)}
-      exiting={SlideOutUp.duration(200)}
       /* Below the status bar, above every screen. */
-      style={[styles.wrap, { top: insets.top + s(6) }]}
+      style={[styles.wrap, { top: insets.top + s(6) }, bannerStyle]}
       pointerEvents="box-none"
     >
       <Pressable
@@ -176,27 +200,40 @@ const NotificationBannerComponent: React.FC<{
         accessibilityLabel={`${current.title}. ${current.detail}`}
         style={({ pressed }) => [styles.card, pressed && styles.pressed]}
       >
-        <View style={styles.iconWell}>
-          <Icon name="bell" size={14} color={palette.gold} />
+        <View style={styles.topRow}>
+          <View style={styles.iconWell}>
+            <Icon name="bell" size={14} color={palette.gold} />
+          </View>
+
+          <View style={styles.body}>
+            <Text style={styles.title} numberOfLines={1}>
+              {current.title}
+            </Text>
+            <Text style={styles.detail} numberOfLines={2}>
+              {current.detail}
+            </Text>
+          </View>
+
+          <Pressable
+            onPress={dismiss}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          >
+            <Icon name="x" size={14} color="rgba(255,255,255,0.6)" />
+          </Pressable>
         </View>
 
-        <View style={styles.body}>
-          <Text style={styles.title} numberOfLines={1}>
-            {current.title}
-          </Text>
-          <Text style={styles.detail} numberOfLines={2}>
-            {current.detail}
-          </Text>
-        </View>
-
-        <Pressable
-          onPress={dismiss}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          accessibilityRole="button"
-          accessibilityLabel="Dismiss"
-        >
-          <Icon name="x" size={14} color="rgba(255,255,255,0.6)" />
-        </Pressable>
+        {/* The attached picture, below the message — as WhatsApp shows one. */}
+        {current.imageUrl ? (
+          <Image
+            source={{
+              uri: resolveMediaUrl(current.imageUrl) ?? current.imageUrl,
+            }}
+            style={styles.bigImage}
+            resizeMode="cover"
+          />
+        ) : null}
       </Pressable>
     </Animated.View>
   );
@@ -213,9 +250,6 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: s(10),
     paddingVertical: s(10),
     paddingHorizontal: s(12),
     backgroundColor: palette.navy,
@@ -224,6 +258,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(245,166,35,0.35)',
     ...shadows.elevatedCard,
   },
+  topRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
   pressed: { opacity: 0.9 },
   iconWell: {
     width: s(28),
@@ -233,6 +268,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(245,166,35,0.16)',
     flexShrink: 0,
+  },
+  bigImage: {
+    width: '100%',
+    height: s(140),
+    borderRadius: radius.md,
+    marginTop: s(9),
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
   body: { flex: 1, minWidth: 0 },
   title: font(11, '800', { color: palette.white }),

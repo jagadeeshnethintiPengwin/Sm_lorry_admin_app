@@ -27,6 +27,7 @@ import {
   ImageViewerModal,
   RadialGlow,
   Screen,
+  Select,
 } from '@components/index';
 import { gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
@@ -68,6 +69,13 @@ type Dialog = {
   confirmLabel: string;
   onConfirm: () => void;
 };
+
+/** The three availability states the web panel sets, for the dropdown. */
+const AVAILABILITY_OPTIONS = [
+  { label: 'Online', value: 'ONLINE' },
+  { label: 'Offline', value: 'OFFLINE' },
+  { label: 'In Trip', value: 'ON_TRIP' },
+];
 
 
 
@@ -248,6 +256,46 @@ export const DriverDetailsScreen: React.FC = () => {
     }
   }, [driverId, refetch]);
 
+  /*
+   * Removing a driver — the same delete the web panel has. The API refuses it
+   * while trips still reference them, so a failure is surfaced through the same
+   * dialog rather than swallowed, and the whole thing sits behind a confirm.
+   */
+  const [deleting, setDeleting] = useState(false);
+  const removeDriver = useCallback(async () => {
+    setDialog(null);
+    setDeleting(true);
+    try {
+      await driverService.remove(driverId);
+      navigation.goBack();
+    } catch (failure) {
+      setDialog({
+        tone: 'danger',
+        icon: 'alert-circle',
+        title: 'Could not remove',
+        message:
+          failure instanceof Error
+            ? failure.message
+            : 'This driver could not be removed. They may still have trips on file.',
+        confirmLabel: 'Close',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [driverId, navigation]);
+  const confirmRemove = useCallback(() => {
+    setDialog({
+      tone: 'danger',
+      icon: 'trash-2',
+      title: 'Delete this driver?',
+      message:
+        'Their profile will be removed. This cannot be undone, and is refused while they still have trips on file.',
+      confirmLabel: 'Delete',
+      onConfirm: removeDriver,
+    });
+  }, [removeDriver]);
+
   /** How long they have been with the firm, from `joinedAt`. */
   const tenure = (() => {
     if (!data?.joinedAt) {
@@ -340,6 +388,47 @@ export const DriverDetailsScreen: React.FC = () => {
   const editDriver = useCallback(
     () => navigation.navigate('AddDriver', { driverId }),
     [navigation, driverId],
+  );
+
+  /*
+   * Dispatch this driver onto a new trip — the office's assign action, the same
+   * one the web panel drives. The New Trip flow raises a booking and, with a
+   * vehicle and driver picked, approves it into a trip; opening it with this
+   * driver's id pre-selects them so the office only picks the load and the lorry.
+   */
+  const assignTrip = useCallback(
+    () => navigation.navigate('NewTrip', { driverId }),
+    [navigation, driverId],
+  );
+
+  /*
+   * Changing a driver's availability — Online / Offline / In Trip, the same
+   * three-value status the web edit form sets. Writes through `PATCH /drivers/:id`
+   * and re-reads, so the chip and the assignment gate follow immediately.
+   */
+  const changeStatus = useCallback(
+    async (next: 'ONLINE' | 'OFFLINE' | 'ON_TRIP') => {
+      if (next === status) {
+        return;
+      }
+      try {
+        await driverService.update(driverId, { status: next });
+        await refetch();
+      } catch (failure) {
+        setDialog({
+          tone: 'danger',
+          icon: 'alert-circle',
+          title: 'Could not change status',
+          message:
+            failure instanceof Error
+              ? failure.message
+              : 'The status could not be updated. Try again.',
+          confirmLabel: 'Close',
+          onConfirm: () => setDialog(null),
+        });
+      }
+    },
+    [driverId, status, refetch],
   );
 
   return (
@@ -449,6 +538,21 @@ export const DriverDetailsScreen: React.FC = () => {
           </View>
         </View>
 
+        {/* Availability — the office's Online / Offline / In Trip status, the
+            same three-value the web panel sets, as a dropdown. */}
+        <View style={styles.block}>
+          <Text style={styles.section}>AVAILABILITY</Text>
+          <Select
+            options={AVAILABILITY_OPTIONS}
+            value={status}
+            placeholder="Set availability"
+            onChange={value =>
+              changeStatus(value as 'ONLINE' | 'OFFLINE' | 'ON_TRIP')
+            }
+            marginBottom={0}
+          />
+        </View>
+
         {/* Current trip */}
         <View style={styles.block}>
           <Text style={styles.section}>CURRENT TRIP</Text>
@@ -504,6 +608,18 @@ export const DriverDetailsScreen: React.FC = () => {
               )}
             </LinearGradient>
           </Pressable>
+
+          {/* Dispatch — assign this driver onto a new trip. Offered only when
+              they are free; a driver already running one cannot take a second. */}
+          {!onTrip ? (
+            <Button
+              label="Assign New Trip"
+              variant="gold"
+              icon="package-plus"
+              onPress={assignTrip}
+              style={styles.assignBtn}
+            />
+          ) : null}
         </View>
 
         {/* Assigned vehicle */}
@@ -699,6 +815,17 @@ export const DriverDetailsScreen: React.FC = () => {
             variant="outline"
             icon="edit-3"
             onPress={editDriver}
+          />
+          <Button
+            label={deleting ? 'Removing…' : 'Delete Driver'}
+            variant="outline"
+            icon="trash-2"
+            color={palette.red}
+            borderColor={palette.redSoft}
+            loading={deleting}
+            disabled={deleting}
+            onPress={confirmRemove}
+            style={styles.deleteBtn}
           />
         </View>
       </Content>
@@ -932,6 +1059,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: s(12),
     paddingBottom: s(20),
   },
+  deleteBtn: { marginTop: s(8) },
+
+  assignBtn: { marginTop: s(10) },
 
   pressed: { opacity: 0.8 },
 });

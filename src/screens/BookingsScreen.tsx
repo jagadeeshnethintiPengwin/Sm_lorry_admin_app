@@ -44,7 +44,7 @@ import type { RootStackParamList, TabParamList } from '@navigation/types';
  *   gold border, PENDING pill, customer row, route rail, dashed meta strip,
  *   and — on the first card — Reject / Review & Assign actions
  */
-type Tab = 'pending' | 'approved' | 'rejected';
+type Tab = 'pending' | 'approved' | 'completed' | 'cancelled' | 'rejected';
 
 type BookingRow = {
   id: string;
@@ -66,25 +66,26 @@ type BookingRow = {
 const TABS: Array<[Tab, string]> = [
   ['pending', 'Pending'],
   ['approved', 'Approved'],
+  ['completed', 'Completed'],
+  ['cancelled', 'Cancelled'],
   ['rejected', 'Rejected'],
 ];
 
 /**
  * The tab a booking belongs to, from the status the API sends.
  *
- * All five `BookingStatus` values are here on purpose. A booking that reaches
- * `COMPLETED` was approved and then delivered, so it stays under Approved —
- * and `CANCELLED` sits with Rejected, both being ways a booking ends without a
- * trip running. Anything not listed is not guessed at: an unrecognised status
- * is dropped rather than falling into Pending, which would have put five
+ * All five `BookingStatus` values are here on purpose, each on its own tab —
+ * Pending / Approved / Completed / Cancelled / Rejected — matching the web
+ * panel's booking board. Anything not listed is not guessed at: an unrecognised
+ * status is dropped rather than falling into Pending, which would have put
  * completed bookings in the owner's approval queue.
  */
 const TAB_FOR: Record<string, Tab | undefined> = {
   PENDING: 'pending',
   APPROVED: 'approved',
-  COMPLETED: 'approved',
+  COMPLETED: 'completed',
   REJECTED: 'rejected',
-  CANCELLED: 'rejected',
+  CANCELLED: 'cancelled',
 };
 
 /** The tile accent cycles, so a list of rows is scannable. */
@@ -242,6 +243,8 @@ export const BookingsScreen: React.FC = () => {
     () => ({
       pending: rows.filter(r => r.status === 'pending').length,
       approved: rows.filter(r => r.status === 'approved').length,
+      completed: rows.filter(r => r.status === 'completed').length,
+      cancelled: rows.filter(r => r.status === 'cancelled').length,
       rejected: rows.filter(r => r.status === 'rejected').length,
     }),
     [rows],

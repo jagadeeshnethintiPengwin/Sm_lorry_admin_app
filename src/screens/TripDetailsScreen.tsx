@@ -1,13 +1,15 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,6 +23,7 @@ import {
   Content,
   DriverGeoMap,
   Footer,
+  HaltUpdates,
   Icon,
   IconWell,
   ListState,
@@ -30,6 +33,7 @@ import {
 import { alpha, gradients, palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
+import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { IconName } from '@components/common/Icon';
 import type { ConfirmTone } from '@components/modals/ConfirmDialog';
@@ -38,9 +42,11 @@ import {
   documentService,
   tripService,
   type AdminDocument,
+  type Halt,
   type TripFinance,
 } from '@services/fleet.service';
 import { exportTripExcel, exportTripPdf } from '@services/tripReport.service';
+import { directionsService, type RoadRoute } from '@services/directions.service';
 import { openExternalUrl } from '@utils/openExternalUrl';
 import { useApi } from '@hooks/useApi';
 
@@ -153,6 +159,82 @@ export const TripDetailsScreen: React.FC = () => {
           onTrip: true,
         }
       : null;
+
+  /*
+   * The whole journey on the map, not just the live fix.
+   *
+   * Pickup and drop are nullable — a booking typed in over the phone has no
+   * autocomplete behind it and so no coordinate — so the trip map is drawn only
+   * when both ends are known; otherwise the driver/vehicle map stands in. When
+   * they are known the map draws the pickup→drop line, a pin at each end, a
+   * pause pin at every halt, and the lorry (with its driver) where it last
+   * reported.
+   */
+  // Memoised on the raw coordinates so the object identity is stable across
+  // renders — the map props and the export callback both depend on it.
+  const pickupCoord = useMemo(
+    () =>
+      booking?.pickupLat != null && booking?.pickupLng != null
+        ? {
+            latitude: Number(booking.pickupLat),
+            longitude: Number(booking.pickupLng),
+          }
+        : null,
+    [booking?.pickupLat, booking?.pickupLng],
+  );
+  const dropCoord = useMemo(
+    () =>
+      booking?.dropLat != null && booking?.dropLng != null
+        ? {
+            latitude: Number(booking.dropLat),
+            longitude: Number(booking.dropLng),
+          }
+        : null,
+    [booking?.dropLat, booking?.dropLng],
+  );
+  /*
+   * The real road between pickup and drop, so the line follows the carriageway
+   * rather than cutting across country as a straight pickup→drop segment.
+   *
+   * Fetched once per leg — the route between two fixed addresses does not change
+   * while the lorry drives it — by keying the effect on the two endpoints as
+   * strings, not on the object identities that change every render. On failure
+   * or an unconfigured key `road()` answers null and the map falls back to the
+   * straight line, which is a worse picture but still a true one.
+   */
+  const [road, setRoad] = useState<RoadRoute | null>(null);
+  const pickupKey = pickupCoord
+    ? `${pickupCoord.latitude},${pickupCoord.longitude}`
+    : '';
+  const dropKey = dropCoord
+    ? `${dropCoord.latitude},${dropCoord.longitude}`
+    : '';
+
+  useEffect(() => {
+    if (!pickupKey || !dropKey) {
+      setRoad(null);
+      return;
+    }
+    let alive = true;
+    const [plat, plng] = pickupKey.split(',').map(Number);
+    const [dlat, dlng] = dropKey.split(',').map(Number);
+    directionsService
+      .road(
+        { latitude: plat, longitude: plng },
+        { latitude: dlat, longitude: dlng },
+      )
+      .then(found => {
+        if (alive) {
+          setRoad(found);
+        }
+      })
+      .catch(() => {
+        // `road()` already answers null on failure; the map draws straight.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [pickupKey, dropKey]);
   const customer = booking?.customer;
   const customerName: string =
     customer?.company || customer?.user?.name || 'Customer';
@@ -198,10 +280,26 @@ export const TripDetailsScreen: React.FC = () => {
    */
   const finance = useApi<TripFinance>(() => tripService.finance(tripId), [tripId]);
 
+  /*
+   * Where the lorry stopped for too long along the way — the same halt log the
+   * Live Track screen shows, so a delivered trip still carries its stops. The
+   * tracking endpoint rolls consecutive still fixes into halts; absent or empty
+   * means the section self-hides.
+   */
+  const trackingApi = useApi(() => tripService.tracking(tripId), [tripId]);
+  const halts: Halt[] = useMemo(
+    () =>
+      Array.isArray(trackingApi.data?.halts) ? trackingApi.data.halts : [],
+    [trackingApi.data],
+  );
+
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
+  const [fullMap, setFullMap] = useState(false);
   const closeDialog = useCallback(() => setDialog(null), []);
+
+  const insets = useSafeAreaInsets();
 
   /**
    * Builds the trip report and hands it to the OS share sheet — an `.xlsx` the
@@ -218,7 +316,13 @@ export const TripDetailsScreen: React.FC = () => {
       setExporting(kind);
       try {
         const build = kind === 'excel' ? exportTripExcel : exportTripPdf;
-        await build(trip, finance.data ?? null, documents);
+        // Halts and the pickup/drop coordinates travel with the trip so the
+        // report can draw the route map and list the stops, like the web admin.
+        await build(trip, finance.data ?? null, documents, {
+          halts,
+          pickup: pickupCoord,
+          drop: dropCoord,
+        });
       } catch (failure) {
         setDialog({
           tone: 'danger',
@@ -235,7 +339,7 @@ export const TripDetailsScreen: React.FC = () => {
         setExporting(null);
       }
     },
-    [trip, finance.data, documents],
+    [trip, finance.data, documents, halts, pickupCoord, dropCoord],
   );
 
   /**
@@ -577,22 +681,30 @@ export const TripDetailsScreen: React.FC = () => {
           ) : null}
         </Card>
 
-        {/* Geo location — the lorry and its driver on one map while the trip is
-            live; "not reported" otherwise. Both share the live fix (the driver
-            rides in the cab) and the map spreads them side by side. */}
+        {/* Geo location — the whole journey on one map: the pickup→drop line,
+            a pin at each end, a pause pin at every halt, and the lorry with its
+            driver where it last reported. When the booking has no pickup/drop
+            coordinate (one typed in over the phone) the driver/vehicle map
+            stands in, reading "not reported" when nothing is live. */}
         <Text style={[styles.section, styles.sectionGap]}>GEO LOCATION</Text>
         <DriverGeoMap
           driver={geoDriver}
           vehicle={geoVehicle}
+          pickup={pickupCoord}
+          drop={dropCoord}
+          routeCoordinates={road?.path}
+          halts={halts}
           height={s(200)}
-          onPress={() =>
-            navigation.navigate('GeoMap', {
-              title: trip?.reference ? `Trip #${trip.reference}` : 'Location',
-              driver: geoDriver,
-              vehicle: geoVehicle,
-            })
-          }
+          onPress={() => setFullMap(true)}
         />
+
+        {/* Halts — where the lorry stopped along the way, with the driver's
+            reason, place, time and photos. Self-hides when there are none. */}
+        {halts.length > 0 ? (
+          <View style={styles.sectionGap}>
+            <HaltUpdates halts={halts} />
+          </View>
+        ) : null}
 
         {/* Customer */}
         <Text style={[styles.section, styles.sectionGap]}>CUSTOMER</Text>
@@ -796,6 +908,36 @@ export const TripDetailsScreen: React.FC = () => {
         onConfirm={() => dialog?.onConfirm()}
         onCancel={closeDialog}
       />
+
+      {/* Full-screen map — the same Google map, now with gestures, a
+          satellite toggle and recentre, fed the same route, halts and fixes. */}
+      <Modal
+        visible={fullMap}
+        animationType="slide"
+        onRequestClose={() => setFullMap(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.fullWrap}>
+          <DriverGeoMap
+            interactive
+            driver={geoDriver}
+            vehicle={geoVehicle}
+            pickup={pickupCoord}
+            drop={dropCoord}
+            routeCoordinates={road?.path}
+            halts={halts}
+            style={styles.fullMap}
+          />
+          <Pressable
+            style={[styles.mapClose, { top: insets.top + s(12) }]}
+            onPress={() => setFullMap(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close full-screen map"
+          >
+            <Icon name="x" size={20} color={palette.navy} />
+          </Pressable>
+        </View>
+      </Modal>
     </Screen>
   );
 };
@@ -866,6 +1008,20 @@ const styles = StyleSheet.create({
     marginBottom: s(8),
   },
   sectionGap: { marginTop: s(14) },
+
+  fullWrap: { flex: 1, backgroundColor: palette.screenBg },
+  fullMap: { borderRadius: 0 },
+  mapClose: {
+    position: 'absolute',
+    left: s(12),
+    width: s(40),
+    height: s(40),
+    borderRadius: radius.full,
+    backgroundColor: palette.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.mapMarker,
+  },
 
   driverRow: {
     flexDirection: 'row',

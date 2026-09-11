@@ -17,6 +17,7 @@ import { radius } from '@theme/radius';
 import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import { font } from '@theme/fonts';
+import type { Halt } from '@services/fleet.service';
 
 /**
  * Real Google map for the Route Overview screen.
@@ -38,6 +39,13 @@ export type TripMapProps = {
   current?: LatLng;
   /** Travelled + remaining path. Falls back to a straight pickup→drop line. */
   routeCoordinates?: LatLng[];
+  /**
+   * Places the lorry sat still too long — drawn as amber pause pins (red while
+   * it is still stopped), each tagged with the place (its reason leading it
+   * when logged), or the minutes stopped when there is no place. Absent or
+   * empty draws nothing.
+   */
+  halts?: Halt[];
   height: number;
   /**
    * The driver behind the wheel — drawn as their own avatar beside the lorry's
@@ -69,6 +77,7 @@ const TripMapComponent: React.FC<TripMapProps> = ({
   drop,
   current,
   routeCoordinates,
+  halts,
   height,
   driver,
   interactive = false,
@@ -153,6 +162,58 @@ const TripMapComponent: React.FC<TripMapProps> = ({
             <Icon name="flag" size={16} color={palette.white} />
           </View>
         </Marker>
+
+        {/* Halts — where the lorry sat still too long. An amber pause pin for a
+            stop it has since left, red with a ticking clock while it is still
+            parked there; each hangs a tag with the place (reason leading it when
+            logged), or the minutes when there is no place. Drawn under the
+            moving puck and driver so those stay on top. Absent or empty draws
+            nothing. */}
+        {halts?.map(halt => {
+          // The stop's place (with its reason leading it when the driver logged
+          // one), falling back to the minutes stopped for an auto-detected halt
+          // that carries no place — matching the web admin's halt pins.
+          const label = halt.place
+            ? halt.reason
+              ? `${halt.reason} · ${halt.place}`
+              : halt.place
+            : `${halt.minutes} min${halt.ongoing ? ' · now' : ''}`;
+          return (
+            <Marker
+              key={`${halt.lat},${halt.lng},${halt.startedAt}`}
+              coordinate={{ latitude: halt.lat, longitude: halt.lng }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+            >
+              <View style={styles.haltWrap}>
+                <View
+                  style={[
+                    styles.marker,
+                    halt.ongoing ? styles.markerHaltLive : styles.markerHalt,
+                  ]}
+                >
+                  <Icon
+                    name={halt.ongoing ? 'clock' : 'pause'}
+                    size={15}
+                    color={palette.white}
+                  />
+                </View>
+                <View
+                  style={[
+                    styles.haltTag,
+                    {
+                      backgroundColor: halt.ongoing ? palette.red : palette.gold,
+                    },
+                  ]}
+                >
+                  <Text style={styles.haltTagText} numberOfLines={1}>
+                    {label}
+                  </Text>
+                </View>
+              </View>
+            </Marker>
+          );
+        })}
 
         {/* Live vehicle */}
         {current ? (
@@ -245,6 +306,23 @@ const styles = StyleSheet.create({
   },
   markerPickup: { backgroundColor: palette.navy },
   markerDrop: { backgroundColor: palette.red },
+  // Halt pins: amber for a stop already left, red while still parked. The
+  // circle sits on the coordinate; the "N min" tag hangs below, out of flow,
+  // so the label never shoves the pin off the point.
+  markerHalt: { backgroundColor: palette.gold },
+  markerHaltLive: { backgroundColor: palette.red },
+  haltWrap: { alignItems: 'center', justifyContent: 'center' },
+  haltTag: {
+    position: 'absolute',
+    top: '100%',
+    marginTop: s(2),
+    maxWidth: s(150),
+    paddingVertical: s(1),
+    paddingHorizontal: s(5),
+    borderRadius: radius.sm,
+    ...shadows.subtle,
+  },
+  haltTagText: font(8, '800', { color: palette.white }),
 
   puckWrap: {
     width: s(60),

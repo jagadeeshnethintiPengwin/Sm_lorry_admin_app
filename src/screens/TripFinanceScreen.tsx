@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -11,6 +11,7 @@ import {
   Card,
   Content,
   DateField,
+  Icon,
   Input,
   ListState,
   Screen,
@@ -49,6 +50,30 @@ const dateOf = (iso: string) =>
     month: 'short',
     year: 'numeric',
   });
+
+/**
+ * A compact "＋ Add" control for a section header.
+ *
+ * The shared `Button` is `width: 100%` by design, so in the header row it
+ * stretched the whole way across and ran off the screen edge. This hugs its
+ * content instead — a small chip beside the section label — which is all the
+ * header needs.
+ */
+const AddChip: React.FC<{ onPress: () => void; label: string }> = ({
+  onPress,
+  label,
+}) => (
+  <Pressable
+    onPress={onPress}
+    accessibilityRole="button"
+    accessibilityLabel={label}
+    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+    style={({ pressed }) => [styles.addChip, pressed && styles.addChipPressed]}
+  >
+    <Icon name="plus-circle" size={12} color={palette.navy} />
+    <Text style={styles.addChipText}>Add</Text>
+  </Pressable>
+);
 
 /**
  * A trip's money — revenue billed, payments received against it, and the
@@ -188,29 +213,45 @@ export const TripFinanceScreen: React.FC = () => {
               <View style={styles.tiles}>
                 {tiles.map(t => (
                   <View key={t.label} style={styles.tile}>
-                    <Text style={[styles.tileValue, { color: t.color }]}>{t.value}</Text>
+                    <View style={styles.tileValueRow}>
+                      <Text
+                        style={[styles.tileValue, { color: t.color }]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.7}
+                      >
+                        {t.value}
+                      </Text>
+                    </View>
                     <Text style={styles.tileLabel}>{t.label}</Text>
                   </View>
                 ))}
-                <View style={[styles.tile, styles.statusTile]}>
-                  <View style={[styles.statusPill, { backgroundColor: status.color }]}>
-                    <Text style={styles.statusText}>{status.label}</Text>
+                {/* The status reads as a sixth tile with the same value/label
+                    shape, so the pill lines up on the value row and every label
+                    sits on one baseline across the grid. */}
+                <View style={styles.tile}>
+                  <View style={styles.tileValueRow}>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        { backgroundColor: status.color },
+                      ]}
+                    >
+                      <Text style={styles.statusText}>{status.label}</Text>
+                    </View>
                   </View>
+                  <Text style={styles.tileLabel}>STATUS</Text>
                 </View>
               </View>
             </Card>
 
             {/* Payments */}
             <View style={styles.sectionHead}>
-              <Text style={styles.sectionLabel}>
+              <Text style={styles.sectionLabel} numberOfLines={1}>
                 PAYMENTS RECEIVED · {fin.payments.count}
               </Text>
-              <Button
-                label="Add"
-                variant="outline"
-                icon="plus-circle"
-                fontSize={11}
-                padding={6}
+              <AddChip
+                label="Add payment"
                 onPress={() => {
                   setFormError('');
                   setSheet('payment');
@@ -239,15 +280,11 @@ export const TripFinanceScreen: React.FC = () => {
 
             {/* Expenses */}
             <View style={styles.sectionHead}>
-              <Text style={styles.sectionLabel}>
+              <Text style={styles.sectionLabel} numberOfLines={1}>
                 TRIP EXPENSES · {fin.costs.count}
               </Text>
-              <Button
-                label="Add"
-                variant="outline"
-                icon="plus-circle"
-                fontSize={11}
-                padding={6}
+              <AddChip
+                label="Add expense"
                 onPress={() => {
                   setFormError('');
                   setSheet('expense');
@@ -368,10 +405,19 @@ export const TripFinanceScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   tiles: { flexDirection: 'row', flexWrap: 'wrap' },
-  tile: { width: '33.33%', paddingVertical: s(6) },
+  // A third of the row each, with a small right gutter so the three columns are
+  // visibly separated rather than glued edge to edge.
+  tile: { width: '33.33%', paddingVertical: s(6), paddingRight: s(6) },
+  // A fixed-height band for the value (or the status pill), so whatever sits in
+  // it — a long ₹ figure, a short one, or the pill — the labels underneath all
+  // land on the same line across the grid.
+  tileValueRow: {
+    height: s(22),
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
   tileValue: font(14, '800'),
   tileLabel: font(8, '800', { color: palette.slate500, letterSpacing: 0.6 }),
-  statusTile: { alignItems: 'flex-start', justifyContent: 'center' },
   statusPill: {
     paddingVertical: s(3),
     paddingHorizontal: s(9),
@@ -386,7 +432,27 @@ const styles = StyleSheet.create({
     marginTop: s(16),
     marginBottom: s(8),
   },
-  sectionLabel: font(9, '800', { color: palette.red, letterSpacing: 1 }),
+  sectionLabel: {
+    ...font(9, '800', { color: palette.red, letterSpacing: 1 }),
+    flex: 1,
+    marginRight: s(8),
+  },
+  // A content-sized chip, never the full-width Button — so it cannot run off
+  // the edge however long the section label is.
+  addChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(4),
+    flexShrink: 0,
+    paddingVertical: s(5),
+    paddingHorizontal: s(10),
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.navy,
+    backgroundColor: palette.white,
+  },
+  addChipPressed: { opacity: 0.7 },
+  addChipText: font(10, '800', { color: palette.navy }),
 
   row: { flexDirection: 'row', alignItems: 'center', gap: s(9) },
   chip: {

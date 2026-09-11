@@ -1,6 +1,7 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 
 import {
   AppHeader,
@@ -15,6 +16,7 @@ import {
   Toggle,
 } from '@components/index';
 import { customerService } from '@services/fleet.service';
+import type { RootStackParamList } from '@navigation/types';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -40,6 +42,14 @@ type BusinessType = 'individual' | 'company';
 
 export const AddCustomerScreen: React.FC = () => {
   const navigation = useNavigation();
+  const route = useRoute<RouteProp<RootStackParamList, 'AddCustomer'>>();
+  /*
+   * The account being edited, or null for a fresh one. Everything the edit form
+   * does differently — prefilling the fields, saving as a PATCH, the header and
+   * button wording — keys off this, so the one screen serves both flows just as
+   * Add Vehicle and Add Driver do.
+   */
+  const editingId = route.params?.customerId ?? null;
 
   const [company, setCompany] = useState('');
   const [type, setType] = useState<BusinessType>('company');
@@ -59,6 +69,40 @@ export const AddCustomerScreen: React.FC = () => {
   const selectIndividual = useCallback(() => setType('individual'), []);
   const selectCompany = useCallback(() => setType('company'), []);
 
+  /*
+   * Fills the form from the customer being edited — once, in edit mode only. The
+   * stored state is a full label ("Telangana"); the picker speaks codes, so it
+   * is reversed back to a code, and left at the default when it matches nothing.
+   */
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!editingId || seeded.current) {
+      return;
+    }
+    customerService
+      .get(editingId)
+      .then(c => {
+        if (!c) {
+          return;
+        }
+        seeded.current = true;
+        const row = c as Record<string, any>;
+        setCompany(String(row.company ?? ''));
+        setName(String(row.contactName ?? row.user?.name ?? ''));
+        setGstin(String(row.gstin ?? ''));
+        setEmail(String(row.email ?? row.user?.email ?? ''));
+        setAddress(String(row.addressLine ?? ''));
+        setCity(String(row.city ?? ''));
+        const mob = String(row.mobile ?? row.user?.mobile ?? '');
+        setMobile(mob.replace(/^\+91/, ''));
+        const code = STATES.find(o => o.label === row.state)?.value;
+        if (code) {
+          setState(code);
+        }
+      })
+      .catch(() => undefined);
+  }, [editingId]);
+
   // Saves the account to the roster. Company, contact and mobile are the only
   // hard requirements — a customer is identified by name and phone, so the
   // address block stays optional, matching what the API now accepts.
@@ -73,7 +117,7 @@ export const AddCustomerScreen: React.FC = () => {
     setBusy(true);
     try {
       const stateLabel = STATES.find(o => o.value === state)?.label ?? state;
-      await customerService.create({
+      const body = {
         company: company.trim(),
         contactName: name.trim(),
         mobile: mobile.trim(),
@@ -82,23 +126,39 @@ export const AddCustomerScreen: React.FC = () => {
         ...(gstin.trim() ? { gstin: gstin.trim() } : {}),
         ...(address.trim() ? { addressLine: address.trim() } : {}),
         ...(city.trim() ? { city: city.trim() } : {}),
-      });
+      };
+      if (editingId) {
+        await customerService.update(editingId, body);
+      } else {
+        await customerService.create(body);
+      }
       navigation.goBack();
     } catch (e) {
       Alert.alert(
-        'Could not add customer',
+        editingId ? 'Could not save changes' : 'Could not add customer',
         e instanceof Error ? e.message : 'Please try again.',
       );
     } finally {
       setBusy(false);
     }
-  }, [company, name, mobile, email, state, gstin, address, city, navigation]);
+  }, [
+    company,
+    name,
+    mobile,
+    email,
+    state,
+    gstin,
+    address,
+    city,
+    editingId,
+    navigation,
+  ]);
 
   return (
     <Screen backgroundColor={palette.white}>
       <AppHeader
-        title="Add Customer"
-        subtitle="New client account"
+        title={editingId ? 'Edit Customer' : 'Add Customer'}
+        subtitle={editingId ? 'Update client account' : 'New client account'}
         showBack
         backIcon="x"
         onBackPress={navigation.goBack}
@@ -307,7 +367,9 @@ export const AddCustomerScreen: React.FC = () => {
 
       <Footer>
         <Button
-          label={busy ? 'Saving…' : 'Save Customer'}
+          label={
+            busy ? 'Saving…' : editingId ? 'Save Changes' : 'Save Customer'
+          }
           variant="gold"
           icon="check-circle-2"
           padding={12}

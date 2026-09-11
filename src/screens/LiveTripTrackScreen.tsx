@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Linking,
   Modal,
@@ -22,6 +22,7 @@ import {
   Card,
   Content,
   Footer,
+  HaltUpdates,
   TripMap,
   Icon,
   IconWell,
@@ -35,6 +36,8 @@ import { shadows } from '@theme/shadows';
 import { s } from '@theme/metrics';
 import type { RootStackParamList } from '@navigation/types';
 import { tripService } from '@services/fleet.service';
+import type { Halt } from '@services/fleet.service';
+import { directionsService, type RoadRoute } from '@services/directions.service';
 import { useApi } from '@hooks/useApi';
 
 /**
@@ -109,6 +112,49 @@ export const LiveTripTrackScreen: React.FC = () => {
       ? { latitude: Number(booking.dropLat), longitude: Number(booking.dropLng) }
       : null;
   const mappable = pickup != null && drop != null;
+
+  /*
+   * The real road pickup→drop, so the line follows the carriageway like Google's
+   * own directions rather than cutting straight across country. Fetched once per
+   * leg — keyed on the two endpoints as strings, not the object identities that
+   * change every render — and left null on failure, where the map falls back to
+   * the straight line.
+   */
+  const [road, setRoad] = useState<RoadRoute | null>(null);
+  const pickupKey = pickup ? `${pickup.latitude},${pickup.longitude}` : '';
+  const dropKey = drop ? `${drop.latitude},${drop.longitude}` : '';
+  useEffect(() => {
+    if (!pickupKey || !dropKey) {
+      setRoad(null);
+      return;
+    }
+    let alive = true;
+    const [plat, plng] = pickupKey.split(',').map(Number);
+    const [dlat, dlng] = dropKey.split(',').map(Number);
+    directionsService
+      .road(
+        { latitude: plat, longitude: plng },
+        { latitude: dlat, longitude: dlng },
+      )
+      .then(found => {
+        if (alive) {
+          setRoad(found);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [pickupKey, dropKey]);
+
+  /*
+   * Where the lorry stopped for too long along the way.
+   *
+   * The tracking endpoint rolls consecutive still fixes into halts; the map
+   * drops a pin on each. Absent (an unstarted trip that has never reported) or
+   * empty means no pins — the map draws exactly as before.
+   */
+  const halts: Halt[] = Array.isArray(tracking?.halts) ? tracking!.halts : [];
 
   const progress = Number(tracking?.progress ?? 0);
   const speedKmph =
@@ -299,7 +345,9 @@ export const LiveTripTrackScreen: React.FC = () => {
           pickup={pickup!}
           drop={drop!}
           current={current ?? pickup!}
+          routeCoordinates={road?.path}
           driver={mapDriver}
+          halts={halts}
           height={220}
           style={styles.map}
         >
@@ -415,20 +463,24 @@ export const LiveTripTrackScreen: React.FC = () => {
         <Text style={styles.section}>TRIP PROGRESS</Text>
         <Card padding={12} marginBottom={10}>
           <View style={styles.progHead}>
-            <View>
+            <View style={styles.progCol}>
               <Text style={styles.progLabel} numberOfLines={1}>
                 {(booking?.pickupPlace ?? '—').toUpperCase()}
               </Text>
-              <Text style={styles.progValue}>
-                {record?.startedAt ? `${clock(record.startedAt)} · Started` : 'Not started'}
+              <Text style={styles.progValue} numberOfLines={1}>
+                {record?.startedAt
+                  ? `${clock(record.startedAt)} · Started`
+                  : 'Not started'}
               </Text>
             </View>
-            <View style={styles.progRight}>
+            <View style={[styles.progCol, styles.progRight]}>
               <Text style={styles.progLabel} numberOfLines={1}>
                 {(booking?.dropPlace ?? '—').toUpperCase()}
               </Text>
-              <Text style={styles.progValue}>
-                {record?.deliveredAt ? `${clock(record.deliveredAt)} · Delivered` : `${remainingKm} km to go`}
+              <Text style={styles.progValue} numberOfLines={1}>
+                {record?.deliveredAt
+                  ? `${clock(record.deliveredAt)} · Delivered`
+                  : `${remainingKm} km to go`}
               </Text>
             </View>
           </View>
@@ -502,6 +554,11 @@ export const LiveTripTrackScreen: React.FC = () => {
             </View>
           </View>
         </Card>
+
+        {/* Halts — where the lorry has stopped, with the driver's reason, the
+            place, the time and photos, and the total time stopped up top.
+            Self-hides when there are none. */}
+        <HaltUpdates halts={halts} />
         </>
         ) : null}
       </Content>
@@ -548,7 +605,9 @@ export const LiveTripTrackScreen: React.FC = () => {
               pickup={pickup}
               drop={drop}
               current={current ?? pickup}
+              routeCoordinates={road?.path}
               driver={mapDriver}
+              halts={halts}
               height={windowHeight}
               style={styles.fullMap}
             />
@@ -711,9 +770,13 @@ const styles = StyleSheet.create({
   progHead: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    gap: s(10),
     marginBottom: s(8),
   },
+  // Each end gets an equal half and can shrink, so a long place name truncates
+  // inside its own column instead of running across into the other one.
+  progCol: { flex: 1, minWidth: 0 },
   progRight: { alignItems: 'flex-end' },
   progLabel: font(8, '800', { color: palette.slate500, letterSpacing: 0.5 }),
   progValue: font(10, '800', { color: palette.navy }),

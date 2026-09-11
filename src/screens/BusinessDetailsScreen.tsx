@@ -7,6 +7,7 @@ import {
   AppHeader,
   Button,
   Card,
+  ConfirmDialog,
   Content,
   Footer,
   Icon,
@@ -67,6 +68,8 @@ export const BusinessDetailsScreen: React.FC = () => {
   const [supportMobile, setSupportMobile] = useState('');
   const [supportEmail, setSupportEmail] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     const p = profile.data as
@@ -102,6 +105,46 @@ export const BusinessDetailsScreen: React.FC = () => {
   }, [profile.data]);
 
   const closePicker = useCallback(() => setPickerOpen(false), []);
+
+  /*
+   * Saves the company profile — the fix for a "Save Changes" that only went
+   * back. The company details are a settings section, so they are written to
+   * `PUT /settings/company` (name, GSTIN, support contact, address), the same
+   * place `GET /owner/profile` reads them from and the web panel saves them to.
+   */
+  const save = useCallback(async () => {
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      await authService.updateCompany({
+        name: company.trim(),
+        gstin: gstin.trim(),
+        email: supportEmail.trim(),
+        mobile: supportMobile.trim(),
+        address: address.trim(),
+        city: city.trim(),
+        state,
+      });
+      navigation.goBack();
+    } catch (failure) {
+      setErrorMsg(
+        failure instanceof Error
+          ? failure.message
+          : 'Could not save your business details. Try again.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    company,
+    gstin,
+    supportEmail,
+    supportMobile,
+    address,
+    city,
+    state,
+    navigation,
+  ]);
 
   return (
     <Screen backgroundColor={palette.white}>
@@ -272,14 +315,27 @@ export const BusinessDetailsScreen: React.FC = () => {
 
       <Footer>
         <Button
-          label="Save Changes"
+          label={saving ? 'Saving…' : 'Save Changes'}
           variant="gold"
           icon="check"
           padding={12}
           fontSize={13}
-          onPress={navigation.goBack}
+          loading={saving}
+          disabled={saving}
+          onPress={save}
         />
       </Footer>
+
+      <ConfirmDialog
+        visible={errorMsg !== null}
+        tone="danger"
+        icon="alert-circle"
+        title="Could not save"
+        message={errorMsg ?? ''}
+        confirmLabel="Close"
+        onConfirm={() => setErrorMsg(null)}
+        onCancel={() => setErrorMsg(null)}
+      />
 
       <ImageSourceSheet
         visible={pickerOpen}

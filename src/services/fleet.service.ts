@@ -352,6 +352,28 @@ export const vehicleService = {
     await apiClient.post(`/vehicles/${vehicleId}/documents`, body);
   },
 
+  /**
+   * Approve or reject one of a truck's papers (RC, insurance, fitness, PUC) —
+   * the office's verdict, the same review gate the driver KYC scans have and the
+   * web panel drives. The id is the *document's*; the route hangs off `/vehicles`
+   * rather than a vehicle id.
+   */
+  reviewDocument: async (
+    documentId: string,
+    status: 'APPROVED' | 'REJECTED',
+    note?: string,
+  ): Promise<void> => {
+    await apiClient.post(`/vehicles/documents/${documentId}/review`, {
+      status,
+      ...(note ? { note } : {}),
+    });
+  },
+
+  /** Approve every pending paper on this truck in one call. */
+  approveAllDocuments: async (vehicleId: string): Promise<void> => {
+    await apiClient.post(`/vehicles/${vehicleId}/documents/approve-all`);
+  },
+
   remove: (id: string) => apiClient.delete(`/vehicles/${id}`),
 };
 
@@ -364,6 +386,19 @@ export const customerService = {
     const { data } = await apiClient.post<AdminCustomer>('/customers', body);
     return data;
   },
+  /** Edit a customer's company/contact/GSTIN/address — the Edit Customer form. */
+  update: async (
+    id: string,
+    body: Partial<NewCustomer>,
+  ): Promise<AdminCustomer> => {
+    const { data } = await apiClient.patch<AdminCustomer>(
+      `/customers/${id}`,
+      body,
+    );
+    return data;
+  },
+  /** Remove a customer account — refused by the API while trips reference it. */
+  remove: (id: string) => apiClient.delete(`/customers/${id}`),
   /**
    * The office's KYC verdict on an account. A customer who signed up in the app
    * is unverified until this is set, and a trip cannot be assigned to their
@@ -509,6 +544,32 @@ export interface TripFinance {
   };
 }
 
+/**
+ * A place the lorry sat still too long — a breakdown, a meal or a night halt.
+ *
+ * The tracking endpoint rolls consecutive still fixes into one of these; the
+ * map drops a pin on each so the office can see where the trip stopped, and
+ * for how long.
+ */
+export interface Halt {
+  lat: number;
+  lng: number;
+  startedAt: string;
+  /** `null` while the lorry is still stopped here. */
+  endedAt: string | null;
+  /** `true` = still parked here right now. */
+  ongoing: boolean;
+  /** How long it has sat, in whole minutes. */
+  minutes: number;
+  /** `auto` = spotted from the GPS trail; `manual` = the driver logged it. */
+  source?: 'auto' | 'manual';
+  /** A driver-logged halt carries the reason, place, note and camera photos. */
+  reason?: string | null;
+  place?: string | null;
+  note?: string | null;
+  photos?: string[];
+}
+
 /** What `/trips/:id/tracking` answers — the live board for one trip. */
 export interface TripTracking {
   reference: string;
@@ -530,6 +591,11 @@ export interface TripTracking {
     label: string;
     createdAt: string;
   }>;
+  /**
+   * Where the lorry sat still too long along the way. Empty when it has kept
+   * moving — an unstarted or freely-running trip has no halts.
+   */
+  halts: Halt[];
 }
 
 /**

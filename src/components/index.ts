@@ -47,4 +47,5 @@ export * from './common/GridMap';
 export * from './common/TripMap';
 export * from './common/FleetMap';
 export * from './common/DriverGeoMap';
+export * from './cards/HaltUpdates';
 export * from './inputs/DateField';

@@ -94,6 +94,8 @@ type DocRow = {
   hasFile: boolean;
   /** Whether that scan is an image (opens in-app) rather than a PDF (opens out). */
   isImage: boolean;
+  /** The office's verdict on this paper — the approval gate. */
+  reviewStatus: 'APPROVED' | 'REJECTED' | 'PENDING';
   /**
    * The back of the card, filed as its own `${kind}_BACK` record. The list
    * still shows one row per paper — the back rides along on the front's row and
@@ -161,6 +163,7 @@ function docsOf(vehicle: AdminVehicle | null): DocRow[] {
         expiresAt?: string | null;
         /* Null until the office files the scan itself. */
         fileUrl?: string | null;
+        reviewStatus?: string | null;
       }>)
     : [];
 
@@ -206,6 +209,13 @@ function docsOf(vehicle: AdminVehicle | null): DocRow[] {
         // Decided off the stored path's extension, so the eye knows before it
         // even fetches the link whether to open a viewer or leave the app.
         isImage: isImageDoc(doc.fileUrl),
+        // Missing reads as pending — an unreviewed paper is not yet approved.
+        reviewStatus: (String(doc.reviewStatus ?? 'PENDING').toUpperCase() ===
+        'APPROVED'
+          ? 'APPROVED'
+          : String(doc.reviewStatus ?? '').toUpperCase() === 'REJECTED'
+            ? 'REJECTED'
+            : 'PENDING') as DocRow['reviewStatus'],
         backId: backDoc ? String(backDoc.id) : undefined,
         backIsImage: backDoc ? isImageDoc(backDoc.fileUrl) : undefined,
       };
@@ -238,6 +248,12 @@ export const VehicleDetailsScreen: React.FC = () => {
 
   const specs = useMemo(() => specsOf(data), [data]);
   const docs = useMemo(() => docsOf(data), [data]);
+  // Papers that have a scan on file but the office has not yet approved — the
+  // ones the review controls and "Approve all" act on.
+  const pendingDocs = useMemo(
+    () => docs.filter(d => d.hasFile && d.reviewStatus !== 'APPROVED'),
+    [docs],
+  );
 
   const driver = (data?.driver ?? null) as {
     user?: { name?: string; mobile?: string };
@@ -333,6 +349,74 @@ export const VehicleDetailsScreen: React.FC = () => {
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const closeDialog = useCallback(() => setDialog(null), []);
+
+  /*
+   * Reviewing the truck's papers — the office's approve/reject verdict, the same
+   * gate driver KYC has and the web panel drives. A pending paper is cleared
+   * here without leaving the vehicle.
+   */
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [approvingAll, setApprovingAll] = useState(false);
+  const reviewDoc = useCallback(
+    async (documentId: string, status: 'APPROVED' | 'REJECTED') => {
+      setReviewingId(documentId);
+      try {
+        await vehicleService.reviewDocument(documentId, status);
+        await refetch();
+      } finally {
+        setReviewingId(null);
+      }
+    },
+    [refetch],
+  );
+  const approveAllDocs = useCallback(async () => {
+    setApprovingAll(true);
+    try {
+      await vehicleService.approveAllDocuments(vehicleId);
+      await refetch();
+    } finally {
+      setApprovingAll(false);
+    }
+  }, [vehicleId, refetch]);
+
+  /*
+   * Removing the truck — the same delete the web panel has, refused by the API
+   * while trips still reference it, behind a confirm because it cannot be undone.
+   */
+  const [deleting, setDeleting] = useState(false);
+  const removeVehicle = useCallback(async () => {
+    setDialog(null);
+    setDeleting(true);
+    try {
+      await vehicleService.remove(vehicleId);
+      navigation.goBack();
+    } catch (failure) {
+      setDialog({
+        tone: 'danger',
+        icon: 'alert-circle',
+        title: 'Could not remove',
+        message:
+          failure instanceof Error
+            ? failure.message
+            : 'This vehicle could not be removed. It may still have trips on file.',
+        confirmLabel: 'Close',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [vehicleId, navigation]);
+  const confirmRemove = useCallback(() => {
+    setDialog({
+      tone: 'danger',
+      icon: 'trash-2',
+      title: 'Delete this vehicle?',
+      message:
+        'This truck will be removed from the fleet. This cannot be undone, and is refused while it still has trips on file.',
+      confirmLabel: 'Delete',
+      onConfirm: removeVehicle,
+    });
+  }, [removeVehicle]);
 
   /**
    * The scan currently open in the in-app image viewer, if any.
@@ -701,7 +785,32 @@ export const VehicleDetailsScreen: React.FC = () => {
         </Card>
 
         {/* Documents */}
-        <Text style={[styles.section, styles.sectionGap]}>DOCUMENTS</Text>
+        <View style={[styles.docsHead, styles.sectionGap]}>
+          <Text style={styles.section}>DOCUMENTS</Text>
+          {pendingDocs.length > 0 ? (
+            <Pressable
+              onPress={approveAllDocs}
+              disabled={approvingAll}
+              accessibilityRole="button"
+              accessibilityLabel="Approve all pending papers"
+              style={({ pressed }) => [
+                styles.approveAllBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              {approvingAll ? (
+                <ActivityIndicator size="small" color={palette.green} />
+              ) : (
+                <>
+                  <Icon name="check-circle-2" size={12} color={palette.green} />
+                  <Text style={styles.approveAllText}>
+                    Approve all ({pendingDocs.length})
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          ) : null}
+        </View>
         <Card padding={0} clip marginBottom={0}>
           {docs.map((doc: DocRow, index: number) => (
             <View
@@ -726,6 +835,49 @@ export const VehicleDetailsScreen: React.FC = () => {
                   {doc.meta}
                 </Text>
               </View>
+
+              {/*
+                Review controls — the office's verdict on this paper. A scan
+                that is still pending shows approve/reject; once approved it
+                reads as a small green tick, the assignment gate cleared. Absent
+                entirely when there is no scan to judge yet.
+              */}
+              {doc.hasFile ? (
+                reviewingId === doc.id ? (
+                  <ActivityIndicator size="small" color={palette.navy} />
+                ) : doc.reviewStatus === 'APPROVED' ? (
+                  <View style={styles.docApproved}>
+                    <Icon name="check-circle-2" size={13} color={palette.green} />
+                  </View>
+                ) : (
+                  <>
+                    <Pressable
+                      onPress={() => reviewDoc(doc.id, 'APPROVED')}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Approve ${doc.name}`}
+                      style={({ pressed }) => [
+                        styles.reviewBtn,
+                        styles.reviewApprove,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Icon name="check" size={13} color={palette.green} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => reviewDoc(doc.id, 'REJECTED')}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Reject ${doc.name}`}
+                      style={({ pressed }) => [
+                        styles.reviewBtn,
+                        styles.reviewReject,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Icon name="x" size={13} color={palette.red} />
+                    </Pressable>
+                  </>
+                )
+              ) : null}
 
               {/*
                 Edit, where the status pill used to be.
@@ -801,14 +953,30 @@ export const VehicleDetailsScreen: React.FC = () => {
       </Content>
 
       <Footer>
-        <Button
-          label="Edit Details"
-          variant="gold"
-          icon="edit-3"
-          padding={12}
-          fontSize={12}
-          onPress={editVehicle}
-        />
+        <View style={styles.footerRow}>
+          <Button
+            label={deleting ? 'Removing…' : 'Delete'}
+            variant="outline"
+            icon="trash-2"
+            color={palette.red}
+            borderColor={palette.redSoft}
+            padding={12}
+            fontSize={12}
+            flex={1}
+            loading={deleting}
+            disabled={deleting}
+            onPress={confirmRemove}
+          />
+          <Button
+            label="Edit Details"
+            variant="gold"
+            icon="edit-3"
+            padding={12}
+            fontSize={12}
+            flex={1.4}
+            onPress={editVehicle}
+          />
+        </View>
       </Footer>
 
       <ConfirmDialog
@@ -1014,6 +1182,50 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+
+  docsHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: s(8),
+  },
+  approveAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(4),
+    paddingVertical: s(4),
+    paddingHorizontal: s(9),
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.green,
+    backgroundColor: palette.white,
+  },
+  approveAllText: font(9, '800', { color: palette.green }),
+
+  reviewBtn: {
+    width: s(28),
+    height: s(28),
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  reviewApprove: {
+    backgroundColor: palette.surfaceAlt,
+    borderColor: palette.green,
+  },
+  reviewReject: {
+    backgroundColor: palette.redTint,
+    borderColor: palette.redSoft,
+  },
+  docApproved: {
+    width: s(28),
+    height: s(28),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  footerRow: { flexDirection: 'row', gap: s(8) },
 
   pressed: { opacity: 0.75 },
 });

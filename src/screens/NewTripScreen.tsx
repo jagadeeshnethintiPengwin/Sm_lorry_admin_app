@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import {
@@ -55,6 +56,12 @@ const rec = (v: unknown): Record<string, unknown> =>
  */
 export const NewTripScreen: React.FC = () => {
   const navigation = useNavigation<Nav>();
+  const route = useRoute<RouteProp<RootStackParamList, 'NewTrip'>>();
+  // A driver (or vehicle) to dispatch, passed from their profile's "Assign New
+  // Trip". Pre-selected once its roster has loaded, so the office only fills in
+  // the load and the other half of the pair.
+  const presetDriverId = route.params?.driverId;
+  const presetVehicleId = route.params?.vehicleId;
 
   const customersApi = useApi(() => customerService.list({ limit: 200 }), []);
   const vehiclesApi = useApi(() => vehicleService.available(), []);
@@ -129,6 +136,34 @@ export const NewTripScreen: React.FC = () => {
     label: str(rec(rec(d).user).name || rec(d).name),
     value: str(rec(d).id),
   }));
+
+  /*
+   * Pre-select the driver/vehicle handed in, once their roster has arrived and
+   * only if they are actually free to take a trip — a preset that is not in the
+   * available list is dropped rather than shown as a blank selection. Runs once.
+   */
+  const presetSeeded = useRef(false);
+  useEffect(() => {
+    if (presetSeeded.current) {
+      return;
+    }
+    const driverReady = !presetDriverId || driverOptions.length > 0;
+    const vehicleReady = !presetVehicleId || vehicleOptions.length > 0;
+    if (!driverReady || !vehicleReady) {
+      return;
+    }
+    presetSeeded.current = true;
+    if (presetDriverId && driverOptions.some(o => o.value === presetDriverId)) {
+      setDriverId(presetDriverId);
+    }
+    if (
+      presetVehicleId &&
+      vehicleOptions.some(o => o.value === presetVehicleId)
+    ) {
+      setVehicleId(presetVehicleId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drivers, vehicles]);
 
   const willAssign = Boolean(vehicleId && driverId);
 
