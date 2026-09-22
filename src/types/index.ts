@@ -133,6 +133,16 @@ export type OwnerProfile = {
   initials: string;
   mobile: string;
   email?: string;
+  /**
+   * What this account may do — `OWNER`, `MANAGER`, `DISPATCHER`, `ACCOUNTANT`.
+   *
+   * The API has always sent it, on sign-in and on `GET /owner/profile`; it was
+   * simply not declared here, so nothing in the app could read it. Screens that
+   * offer an action the API restricts — sending a notification to every driver,
+   * which only the owner and managers may do — need it to avoid offering a
+   * button that answers 403.
+   */
+  role?: string;
   businessName: string;
   gstin?: string;
   pan?: string;

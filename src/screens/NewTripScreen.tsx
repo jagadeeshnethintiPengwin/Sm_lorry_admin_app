@@ -9,14 +9,21 @@ import {
   Button,
   Card,
   Content,
+  CustomerPicker,
   DateField,
   Footer,
   Input,
   PlaceInput,
   Screen,
   Select,
+  customerCompany,
+  customerMobile,
+  customerPerson,
+  customerVerified,
+  prettyMobile,
 } from '@components/index';
 import { useApi } from '@hooks/useApi';
+import { ApiError } from '@services/api.client';
 import {
   bookingService,
   customerService,
@@ -63,12 +70,10 @@ export const NewTripScreen: React.FC = () => {
   const presetDriverId = route.params?.driverId;
   const presetVehicleId = route.params?.vehicleId;
 
-  const customersApi = useApi(() => customerService.list({ limit: 200 }), []);
   const vehiclesApi = useApi(() => vehicleService.available(), []);
   const driversApi = useApi(() => driverService.available(), []);
   const typesApi = useApi(() => vehicleService.types(), []);
 
-  const customers = customersApi.data ?? [];
   const vehicles = vehiclesApi.data ?? [];
   const drivers = driversApi.data ?? [];
   // Stable reference so the type-options memo below is not invalidated every
@@ -106,6 +111,14 @@ export const NewTripScreen: React.FC = () => {
     email: '',
     state: '',
   });
+  /*
+   * Which field of the new-customer form is being typed into, so only that one
+   * offers "already on file?" matches. Both fields search the same roster, and
+   * two lists open at once under one card reads as a mess.
+   */
+  const [dupField, setDupField] = useState<'company' | 'contactName' | null>(
+    null,
+  );
 
   const [busy, setBusy] = useState(false);
 
@@ -167,18 +180,43 @@ export const NewTripScreen: React.FC = () => {
 
   const willAssign = Boolean(vehicleId && driverId);
 
-  const query = custQuery.trim().toLowerCase();
-  const matches = (
-    query
-      ? customers.filter(c =>
-          `${str(rec(c).company)} ${str(rec(c).contactName)} ${str(
-            rec(rec(c).user).mobile,
-          )}`
-            .toLowerCase()
-            .includes(query),
-        )
-      : customers
-  ).slice(0, 6);
+  /**
+   * A customer chosen from any of the suggestion lists on this card.
+   *
+   * The booking rides on their existing account — that is the whole point of
+   * finding them rather than typing them in again — so the record is selected
+   * and the card collapses to name it. Whatever was half-typed into the
+   * new-customer form is left exactly as it was: filling it from the account
+   * just chosen would leave a form that creates a duplicate of that very
+   * account if anyone reopened it.
+   */
+  const chooseCustomer = useCallback((customer: AdminCustomer) => {
+    setSelected(customer);
+    setCustMode('existing');
+    setCustQuery('');
+    setDupField(null);
+  }, []);
+
+  /*
+   * "Other" — open the new-customer form carrying whatever was typed into the
+   * search box, so nobody types the same name twice. Digits are a phone number
+   * and anything else is the company/name, which is how the office searches.
+   */
+  const startNewCustomer = useCallback((typed: string) => {
+    const text = typed.trim();
+    const digits = text.replace(/\D/g, '');
+    const isNumber = digits.length >= 6 && /^[\d\s+()-]+$/.test(text);
+    setNc(prev => ({
+      ...prev,
+      ...(isNumber
+        ? { mobile: digits.slice(-10) }
+        : text
+          ? { company: text }
+          : {}),
+    }));
+    setCustMode('new');
+    setDupField(null);
+  }, []);
 
   const submit = useCallback(async () => {
     if (custMode === 'existing' && !selected) {
@@ -217,14 +255,47 @@ export const NewTripScreen: React.FC = () => {
     try {
       let customerId = selected?.id ?? '';
       if (custMode === 'new') {
-        const created = await customerService.create({
-          company: nc.company.trim(),
-          contactName: nc.contactName.trim(),
-          mobile: nc.mobile.trim(),
-          ...(nc.email.trim() ? { email: nc.email.trim() } : {}),
-          ...(nc.state.trim() ? { state: nc.state.trim() } : {}),
-        });
-        customerId = created.id;
+        try {
+          const created = await customerService.create({
+            company: nc.company.trim(),
+            contactName: nc.contactName.trim(),
+            mobile: nc.mobile.trim(),
+            ...(nc.email.trim() ? { email: nc.email.trim() } : {}),
+            ...(nc.state.trim() ? { state: nc.state.trim() } : {}),
+          });
+          customerId = created.id;
+        } catch (e) {
+          /*
+           * One number is one account, so the API refuses a second — which is
+           * exactly the case the suggestions under the name fields exist to
+           * catch, reached here because the office typed the details straight
+           * out. Hand them back to the search with that number already in the
+           * box rather than making them find it themselves.
+           */
+          setBusy(false);
+          const message =
+            e instanceof Error ? e.message : 'Please try again.';
+          const clash = e instanceof ApiError && e.status === 409;
+          Alert.alert(
+            clash ? 'Customer already on file' : 'Could not add the customer',
+            message,
+            clash
+              ? [
+                  {
+                    text: 'Find them',
+                    onPress: () => {
+                      setCustMode('existing');
+                      setSelected(null);
+                      setCustQuery(nc.mobile.trim() || nc.company.trim());
+                      setDupField(null);
+                    },
+                  },
+                  { text: 'Back', style: 'cancel' },
+                ]
+              : undefined,
+          );
+          return;
+        }
       }
 
       const booking = await bookingService.create({
@@ -327,102 +398,121 @@ export const NewTripScreen: React.FC = () => {
         <Card padding={12}>
           {custMode === 'existing' ? (
             selected ? (
-              <View style={styles.selectedRow}>
-                <View style={styles.flexMin}>
-                  <Text style={styles.selName} numberOfLines={1}>
-                    {str(rec(selected).company) || 'Customer'}
-                  </Text>
-                  <Text style={styles.selMeta} numberOfLines={1}>
-                    {str(rec(selected).contactName)}
-                    {str(rec(rec(selected).user).mobile)
-                      ? ` · ${str(rec(rec(selected).user).mobile)}`
-                      : ''}
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => setSelected(null)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Change customer"
-                >
-                  <Text style={styles.link}>Change</Text>
-                </Pressable>
-              </View>
-            ) : (
               <>
-                <Input
-                  value={custQuery}
-                  onChangeText={setCustQuery}
-                  placeholder="Search by name, company or phone…"
-                  autoCapitalize="none"
-                  marginBottom={8}
-                />
-                <View style={styles.matchList}>
-                  {matches.map(c => (
-                    <Pressable
-                      key={c.id}
-                      onPress={() => setSelected(c)}
-                      style={styles.matchRow}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Select ${str(rec(c).company)}`}
-                    >
-                      <Text style={styles.matchName} numberOfLines={1}>
-                        {str(rec(c).company) || 'Customer'}
-                      </Text>
-                      <Text style={styles.matchMeta} numberOfLines={1}>
-                        {str(rec(c).contactName)}
-                        {str(rec(rec(c).user).mobile)
-                          ? ` · ${str(rec(rec(c).user).mobile)}`
-                          : ''}
-                      </Text>
-                    </Pressable>
-                  ))}
-                  {matches.length === 0 ? (
-                    <Text style={styles.matchEmpty}>
-                      {customersApi.loading
-                        ? 'Loading customers…'
-                        : query
-                          ? `No customer matches “${custQuery}”.`
-                          : 'No customers yet.'}
+                {/*
+                  * Named exactly as the row that was tapped named it — company
+                  * first, the person and their number underneath — so picking
+                  * one and seeing it confirmed is plainly the same account.
+                  */}
+                <View style={styles.selectedRow}>
+                  <View style={styles.selAvatar}>
+                    <Text style={styles.selInitials}>
+                      {(customerCompany(selected) || customerPerson(selected))
+                        .split(/\s+/)
+                        .filter(Boolean)
+                        .slice(0, 2)
+                        .map(word => word[0] ?? '')
+                        .join('')
+                        .toUpperCase() || '?'}
                     </Text>
-                  ) : null}
+                  </View>
+                  <View style={styles.flexMin}>
+                    <Text style={styles.selName} numberOfLines={2}>
+                      {customerCompany(selected) ||
+                        customerPerson(selected) ||
+                        'Customer'}
+                    </Text>
+                    <Text style={styles.selMeta} numberOfLines={2}>
+                      {[
+                        customerCompany(selected) && customerPerson(selected)
+                          ? customerPerson(selected)
+                          : '',
+                        prettyMobile(customerMobile(selected)),
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
                   <Pressable
-                    onPress={() => setCustMode('new')}
-                    style={styles.otherRow}
+                    onPress={() => setSelected(null)}
                     accessibilityRole="button"
-                    accessibilityLabel="Add a new customer"
+                    accessibilityLabel="Change customer"
                   >
-                    <Text style={styles.otherText}>
-                      + Other — add a new customer
-                    </Text>
+                    <Text style={styles.link}>Change</Text>
                   </Pressable>
                 </View>
+                {/*
+                  * A trip cannot be raised against an account the office has
+                  * not checked — `approve` refuses it — so say so here rather
+                  * than after the whole form has been filled in.
+                  */}
+                {customerVerified(selected) ? null : (
+                  <Text style={styles.warn}>
+                    This account is not verified yet — verify it on the customer
+                    record before a vehicle and driver can be assigned.
+                  </Text>
+                )}
               </>
+            ) : (
+              <CustomerPicker
+                value={custQuery}
+                onChangeText={setCustQuery}
+                onSelect={chooseCustomer}
+                onAddNew={startNewCustomer}
+                placeholder="Search by name, company or phone…"
+                autoCapitalize="words"
+              />
             )
           ) : (
             <>
               <View style={styles.newHead}>
                 <Text style={styles.newTitle}>New customer</Text>
                 <Pressable
-                  onPress={() => setCustMode('existing')}
+                  onPress={() => {
+                    setCustMode('existing');
+                    setDupField(null);
+                  }}
                   accessibilityRole="button"
                   accessibilityLabel="Search existing customers"
                 >
                   <Text style={styles.link}>← Search existing</Text>
                 </Pressable>
               </View>
-              <Input
+              {/*
+                * Both name fields still search the roster while they are typed
+                * in: the office reaches for "Other" the moment a name is not
+                * recognised, and an account entered twice splits a customer's
+                * history across two records — and is refused outright by the
+                * API when the mobile number collides. Picking a match here
+                * drops straight back to that customer.
+                */}
+              <CustomerPicker
                 label="Company / Name"
                 required
                 value={nc.company}
-                onChangeText={v => setNc({ ...nc, company: v })}
+                onChangeText={v => {
+                  setNc({ ...nc, company: v });
+                  setDupField('company');
+                }}
+                onSelect={chooseCustomer}
+                enabled={dupField === 'company'}
+                quiet
+                listTitle="ALREADY ON FILE?"
                 placeholder="e.g. Sri Sai Traders"
                 marginBottom={10}
               />
-              <Input
+              <CustomerPicker
                 label="Contact Person"
                 required
                 value={nc.contactName}
-                onChangeText={v => setNc({ ...nc, contactName: v })}
+                onChangeText={v => {
+                  setNc({ ...nc, contactName: v });
+                  setDupField('contactName');
+                }}
+                onSelect={chooseCustomer}
+                enabled={dupField === 'contactName'}
+                quiet
+                listTitle="ALREADY ON FILE?"
                 placeholder="Contact person name"
                 marginBottom={10}
               />
@@ -654,34 +744,21 @@ const styles = StyleSheet.create({
   link: font(10, '800', { color: palette.red }),
 
   selectedRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
+  selAvatar: {
+    width: s(32),
+    height: s(32),
+    borderRadius: radius.full,
+    backgroundColor: palette.navyTint,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selInitials: font(10, '800', { color: palette.navy }),
   selName: font(12, '800', { color: palette.navy }),
   selMeta: { ...font(9, '400', { color: palette.slate500 }), marginTop: s(1) },
-
-  matchList: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.gray200,
-    borderRadius: radius.md,
-    overflow: 'hidden',
+  warn: {
+    ...font(9, '600', { color: palette.red, lineHeight: 1.4 }),
+    marginTop: s(8),
   },
-  matchRow: {
-    paddingVertical: s(9),
-    paddingHorizontal: s(11),
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: palette.gray200,
-  },
-  matchName: font(11, '800', { color: palette.navy }),
-  matchMeta: { ...font(9, '400', { color: palette.slate500 }), marginTop: s(1) },
-  matchEmpty: {
-    ...font(10, '400', { color: palette.slate400 }),
-    paddingVertical: s(10),
-    paddingHorizontal: s(11),
-  },
-  otherRow: {
-    paddingVertical: s(10),
-    paddingHorizontal: s(11),
-    backgroundColor: palette.surfaceAlt,
-  },
-  otherText: font(10, '800', { color: palette.red }),
 
   newHead: {
     flexDirection: 'row',

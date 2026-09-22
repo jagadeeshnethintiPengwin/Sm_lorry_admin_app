@@ -66,6 +66,43 @@ async function oneOf<T>(path: string): Promise<T> {
 // second model. Screens read the fields they need and the smoke test proves
 // those fields are there.
 
+export type AdminVehicleType = Record<string, unknown> & {
+  id: string;
+  name: string;
+  capacityLabel: string;
+  bodyLabel: string;
+  illustration?: string;
+  /** Selected into the catalogue a customer picks from. */
+  active: boolean;
+};
+
+export type AdminVehicleRequest = Record<string, unknown> & {
+  id: string;
+  vehicleType: string;
+  pickupPlace: string;
+  dropPlace: string;
+  material?: string | null;
+  weightTons?: number | null;
+  neededAt?: string | null;
+  note?: string | null;
+  status: string;
+  createdAt: string;
+  company?: string | null;
+  contactName?: string | null;
+  mobile?: string | null;
+  bookingId?: string | null;
+  bookingReference?: string | null;
+};
+
+/** One request in full — adds the booking it became and that booking's papers. */
+export type AdminVehicleRequestDetail = AdminVehicleRequest & {
+  customerMobile?: string | null;
+  customerEmail?: string | null;
+  customerAddress?: string | null;
+  booking?: Record<string, unknown> | null;
+  documents?: Array<Record<string, unknown>>;
+};
+
 export type AdminBooking = Record<string, unknown> & {
   id: string;
   reference?: string;
@@ -293,6 +330,51 @@ export const vehicleService = {
     listOf<{ id: string; name: string; capacityLabel?: string }>(
       '/vehicles/types',
     ),
+
+  /**
+   * Every type, selected or not — the catalogue manager's view.
+   *
+   * `types` above serves the pickers and returns only what a customer may
+   * currently book. Managing the catalogue means seeing the ones that have been
+   * taken out of it too, to bring them back or correct their labels.
+   */
+  allTypes: () => listOf<AdminVehicleType>('/vehicles/types/all'),
+
+  createType: async (body: {
+    name: string;
+    capacityLabel: string;
+    bodyLabel: string;
+    illustration?: string;
+  }): Promise<AdminVehicleType> => {
+    const { data } = await apiClient.post<AdminVehicleType>(
+      '/vehicles/types',
+      body,
+    );
+    return data;
+  },
+
+  /**
+   * Edit a type, or select and deselect it from the customer's catalogue.
+   *
+   * Deselecting is not deleting: lorries and past bookings still name the type,
+   * so it stays on the record and simply stops being offered.
+   */
+  updateType: async (
+    id: string,
+    body: Partial<{
+      name: string;
+      capacityLabel: string;
+      bodyLabel: string;
+      illustration: string;
+      active: boolean;
+    }>,
+  ): Promise<AdminVehicleType> => {
+    const { data } = await apiClient.patch<AdminVehicleType>(
+      `/vehicles/types/${id}`,
+      body,
+    );
+    return data;
+  },
   get: (id: string) => oneOf<AdminVehicle>(`/vehicles/${id}`),
   create: async (body: NewVehicle): Promise<AdminVehicle> => {
     const { data } = await apiClient.post<AdminVehicle>('/vehicles', body);
@@ -465,6 +547,23 @@ export const tripService = {
     return data;
   },
 
+  /**
+   * The office's sign-off on a delivered run.
+   *
+   * Delivery and completion are two different things: a driver ending a trip
+   * frees the lorry so the next job can go out, but the run is not closed until
+   * someone here has been through what it produced — the delivery photos, the
+   * scans, who signed for it. Only a delivered trip can be approved; approving
+   * one twice is a double-tap, not an error, and the backend treats it as such.
+   */
+  approveCompletion: async (id: string, note?: string) => {
+    const { data } = await apiClient.post(
+      `/trips/${id}/approve-completion`,
+      note?.trim() ? { note: note.trim() } : {},
+    );
+    return data;
+  },
+
   /** Cancel a live trip with a reason — frees the vehicle and driver. */
   cancel: async (id: string, reason: string) => {
     const { data } = await apiClient.post(`/trips/${id}/cancel`, { reason });
@@ -614,7 +713,17 @@ export type LiveTrip = {
   status?: string;
   registration?: string;
   driver?: string;
+  /** `Kondapur → Srikakulam` — the one-line form, for a tight row. */
   route?: string;
+  /**
+   * The two ends on their own, and their full addresses when the booking was
+   * placed from a map suggestion. A card that lays the leg out as a column
+   * uses these rather than splitting `route` back apart on its arrow.
+   */
+  pickupPlace?: string;
+  dropPlace?: string;
+  pickupAddress?: string | null;
+  dropAddress?: string | null;
   distanceKm?: number;
   coveredKm?: number;
   /** Null until the driver's app has reported at least once. */
@@ -688,8 +797,80 @@ export const documentService = {
   },
 };
 
+/** What the office is writing to, as `POST /notifications` names them. */
+export type NotifyAudience =
+  | 'DRIVER'
+  | 'CUSTOMER'
+  | 'OWNER'
+  | 'MANAGER'
+  | 'DISPATCHER';
+
+/**
+ * A notification the office writes itself.
+ *
+ * Addressed to a role, never to one account: the endpoint takes an audience,
+ * and a free-text user id would be a way to message somebody by guessing a
+ * `cuid`. `imageUrl` is a full `http(s)` address — the handset fetches the
+ * picture itself, with no session — which is what `POST /uploads` hands back.
+ */
+export type NewNotification = {
+  audience: NotifyAudience;
+  category?: string;
+  title: string;
+  detail: string;
+  link?: string;
+  imageUrl?: string;
+};
+
+/**
+ * The customer app's "Request a Vehicle" queue, as the office sees it.
+ *
+ * A customer files one of these when the lorry they need is not in the
+ * catalogue — a 32-footer, a Bajaj auto. The web panel has had a screen for
+ * this since the queue existed; this app had none, so an operator working from
+ * their phone could not see a request at all, let alone answer one.
+ */
+export const vehicleRequestService = {
+  list: (status?: string) =>
+    pageOf<AdminVehicleRequest>(
+      '/vehicle-requests',
+      status ? { status } : undefined,
+    ),
+
+  /** One request with its booking and papers — the details screen. */
+  get: (id: string) =>
+    oneOf<AdminVehicleRequestDetail>(`/vehicle-requests/${id}`),
+
+  /**
+   * Answer it: quote, confirm into a booking, close, or cancel.
+   *
+   * `note` is what the customer reads on their request screen, so it is the
+   * office's actual reply rather than an internal remark.
+   */
+  setStatus: async (id: string, status: string, note?: string) => {
+    const { data } = await apiClient.patch(`/vehicle-requests/${id}`, {
+      status,
+      ...(note ? { note } : {}),
+    });
+    return data;
+  },
+};
+
 export const notificationService = {
   list: () => listOf<Record<string, unknown>>('/notifications'),
+  /**
+   * `POST /notifications` — sends one from the office.
+   *
+   * The API allows this to the owner and managers only, so a screen offering it
+   * checks the signed-in role first rather than letting the send answer 403.
+   */
+  send: async (body: NewNotification): Promise<Record<string, unknown>> => {
+    const { data } = await apiClient.post<Record<string, unknown>>(
+      '/notifications',
+      body,
+    );
+    return data;
+  },
   unreadCount: async (): Promise<number> => {
     const { data } = await apiClient.get<{ count: number }>(
       '/notifications/unread-count',

@@ -17,6 +17,9 @@ import { CustomersScreen } from '@screens/CustomersScreen';
 import { CustomerDetailsScreen } from '@screens/CustomerDetailsScreen';
 import { AddCustomerScreen } from '@screens/AddCustomerScreen';
 import { BookingReviewScreen } from '@screens/BookingReviewScreen';
+import { VehicleTypesScreen } from '@screens/VehicleTypesScreen';
+import { VehicleRequestsScreen } from '@screens/VehicleRequestsScreen';
+import { VehicleRequestDetailsScreen } from '@screens/VehicleRequestDetailsScreen';
 import { TripsScreen } from '@screens/TripsScreen';
 import { NewTripScreen } from '@screens/NewTripScreen';
 import { TripDetailsScreen } from '@screens/TripDetailsScreen';
@@ -29,6 +32,7 @@ import { GeoMapScreen } from '@screens/GeoMapScreen';
 import { PodViewerScreen } from '@screens/PodViewerScreen';
 import { DocumentsScreen } from '@screens/DocumentsScreen';
 import { NotificationsScreen } from '@screens/NotificationsScreen';
+import { SendNotificationScreen } from '@screens/SendNotificationScreen';
 import { BusinessDetailsScreen } from '@screens/BusinessDetailsScreen';
 import { LogoutConfirmScreen } from '@screens/LogoutConfirmScreen';
 import { ReportsScreen } from '@screens/ReportsScreen';
@@ -128,6 +132,15 @@ export const RootNavigator: React.FC = () => {
 
         {/* Bookings & trips */}
         <Stack.Screen name="BookingReview" component={BookingReviewScreen} />
+        <Stack.Screen name="VehicleTypes" component={VehicleTypesScreen} />
+        <Stack.Screen
+          name="VehicleRequests"
+          component={VehicleRequestsScreen}
+        />
+        <Stack.Screen
+          name="VehicleRequestDetails"
+          component={VehicleRequestDetailsScreen}
+        />
         <Stack.Screen name="Trips" component={TripsScreen} />
         <Stack.Screen name="NewTrip" component={NewTripScreen} />
         <Stack.Screen name="TripDetails" component={TripDetailsScreen} />
@@ -148,6 +161,10 @@ export const RootNavigator: React.FC = () => {
         <Stack.Screen name="ReportView" component={ReportViewScreen} />
         <Stack.Screen name="Documents" component={DocumentsScreen} />
         <Stack.Screen name="Notifications" component={NotificationsScreen} />
+        <Stack.Screen
+          name="SendNotification"
+          component={SendNotificationScreen}
+        />
         <Stack.Screen name="BusinessDetails" component={BusinessDetailsScreen} />
         <Stack.Screen
           name="LogoutConfirm"

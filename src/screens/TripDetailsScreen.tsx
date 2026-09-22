@@ -45,7 +45,12 @@ import {
   type Halt,
   type TripFinance,
 } from '@services/fleet.service';
-import { exportTripExcel, exportTripPdf } from '@services/tripReport.service';
+import {
+  exportTripExcel,
+  exportTripInvoice,
+  exportTripPdf,
+  exportTripPod,
+} from '@services/tripReport.service';
 import { directionsService, type RoadRoute } from '@services/directions.service';
 import { openExternalUrl } from '@utils/openExternalUrl';
 import { useApi } from '@hooks/useApi';
@@ -295,7 +300,8 @@ export const TripDetailsScreen: React.FC = () => {
 
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
+  type ExportKind = 'excel' | 'pdf' | 'invoice' | 'pod';
+  const [exporting, setExporting] = useState<ExportKind | null>(null);
   const [fullMap, setFullMap] = useState(false);
   const closeDialog = useCallback(() => setDialog(null), []);
 
@@ -309,25 +315,31 @@ export const TripDetailsScreen: React.FC = () => {
    * uses. A dismissed share sheet is not a failure and is swallowed downstream.
    */
   const runExport = useCallback(
-    async (kind: 'excel' | 'pdf') => {
+    async (kind: ExportKind) => {
       if (!trip) {
         return;
       }
       setExporting(kind);
       try {
-        const build = kind === 'excel' ? exportTripExcel : exportTripPdf;
-        // Halts and the pickup/drop coordinates travel with the trip so the
-        // report can draw the route map and list the stops, like the web admin.
-        await build(trip, finance.data ?? null, documents, {
-          halts,
-          pickup: pickupCoord,
-          drop: dropCoord,
-        });
+        if (kind === 'invoice') {
+          await exportTripInvoice(trip);
+        } else if (kind === 'pod') {
+          await exportTripPod(trip);
+        } else {
+          const build = kind === 'excel' ? exportTripExcel : exportTripPdf;
+          // Halts and the pickup/drop coordinates travel with the trip so the
+          // report can draw the route map and list the stops, like the web admin.
+          await build(trip, finance.data ?? null, documents, {
+            halts,
+            pickup: pickupCoord,
+            drop: dropCoord,
+          });
+        }
       } catch (failure) {
         setDialog({
           tone: 'danger',
           icon: 'alert-circle',
-          title: 'Could not create the report',
+          title: 'Could not create the document',
           message:
             failure instanceof Error
               ? failure.message
@@ -419,6 +431,70 @@ export const TripDetailsScreen: React.FC = () => {
   // something to change.
   const canReassign =
     trip?.status === 'SCHEDULED' || trip?.status === 'IN_TRANSIT';
+
+  /*
+   * The office's sign-off on a finished run.
+   *
+   * A driver ending a trip frees the lorry and the load is off, but the job is
+   * not closed until someone here has been through what the run produced — the
+   * photos above, the papers below. Until that happens the trip sits delivered
+   * and unapproved, which is what this card says.
+   */
+  const [approving, setApproving] = useState(false);
+  const approvedAt: string | null =
+    (trip?.completionApprovedAt as string | null) ?? null;
+  const approvalNote: string | null =
+    (trip?.completionNote as string | null) ?? null;
+  const awaitingApproval = trip?.status === 'DELIVERED' && !approvedAt;
+
+  const runApproval = useCallback(async () => {
+    setDialog(null);
+    setApproving(true);
+    try {
+      await tripService.approveCompletion(tripId);
+      refetch();
+      setDialog({
+        tone: 'success',
+        icon: 'check-circle-2',
+        title: 'Trip completed',
+        message:
+          'The paperwork is approved and this run is closed. The customer and the driver have been told.',
+        confirmLabel: 'Done',
+        onConfirm: () => setDialog(null),
+      });
+    } catch (failure) {
+      setDialog({
+        tone: 'danger',
+        icon: 'alert-circle',
+        title: 'Could not approve the trip',
+        message:
+          failure instanceof Error
+            ? failure.message
+            : 'The approval did not go through. Check your signal and try again.',
+        confirmLabel: 'Close',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setApproving(false);
+    }
+  }, [tripId, refetch]);
+
+  /*
+   * Asked before it is done. This is the office certifying that a run's
+   * paperwork is in order — not a toggle to flick and undo, so it gets a
+   * confirmation that names what approving actually sets off.
+   */
+  const confirmApproval = useCallback(() => {
+    setDialog({
+      tone: 'gold',
+      icon: 'clipboard-check',
+      title: 'Mark this trip completed?',
+      message:
+        'Check the delivery photos and papers on this screen first. Approving closes the run and notifies the customer and the driver.',
+      confirmLabel: 'Trip Completed',
+      onConfirm: runApproval,
+    });
+  }, [runApproval]);
 
   const openTimeline = useCallback(
     () => navigation.navigate('TripTimeline', { tripId }),
@@ -706,6 +782,86 @@ export const TripDetailsScreen: React.FC = () => {
           </View>
         ) : null}
 
+        {/* Trip completion — the office's sign-off, sitting directly after the
+            tracking and halts it is a judgement on, and above the papers it is
+            a judgement of. Only a delivered run shows it: there is nothing to
+            approve while the lorry is still out. */}
+        {trip?.status === 'DELIVERED' ? (
+          <>
+            <Text style={[styles.section, styles.sectionGap]}>
+              TRIP COMPLETION
+            </Text>
+            <Card padding={12}>
+              {awaitingApproval ? (
+                <>
+                  <View style={styles.approveHead}>
+                    <IconWell
+                      icon="clipboard-check"
+                      size={38}
+                      iconSize={20}
+                      backgroundColor={palette.goldTint}
+                      color={palette.gold}
+                      borderRadius={radius.lg}
+                    />
+                    <View style={styles.driverBody}>
+                      <Text style={styles.driverName}>
+                        Awaiting your approval
+                      </Text>
+                      <Text style={styles.driverPhone}>
+                        The load is off and the lorry is free, but this run
+                        stays open until you approve it.
+                      </Text>
+                    </View>
+                  </View>
+                  <Button
+                    label={approving ? 'Approving…' : 'Trip Completed'}
+                    variant="gold"
+                    icon="check-circle-2"
+                    iconSize={14}
+                    padding={10}
+                    fontSize={12}
+                    gap={6}
+                    loading={approving}
+                    disabled={approving}
+                    onPress={confirmApproval}
+                    style={styles.reassignBtn}
+                  />
+                </>
+              ) : (
+                <View style={styles.approveHead}>
+                  <IconWell
+                    icon="check-circle-2"
+                    size={38}
+                    iconSize={20}
+                    backgroundColor="#dcfce7"
+                    color={palette.green}
+                    borderRadius={radius.lg}
+                  />
+                  <View style={styles.driverBody}>
+                    <Text style={styles.driverName}>Trip completed</Text>
+                    <Text style={styles.driverPhone}>
+                      {approvalNote ??
+                        `Approved by the office${
+                          approvedAt
+                            ? ` · ${new Date(approvedAt).toLocaleString(
+                                'en-IN',
+                                {
+                                  day: '2-digit',
+                                  month: 'short',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                },
+                              )}`
+                            : ''
+                        }`}
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </Card>
+          </>
+        ) : null}
+
         {/* Customer */}
         <Text style={[styles.section, styles.sectionGap]}>CUSTOMER</Text>
         <Card padding={11} style={styles.customerRow}>
@@ -807,13 +963,14 @@ export const TripDetailsScreen: React.FC = () => {
           </View>
         )}
 
-        {/* Trip report — the same download the web admin offers: an Excel
-            workbook the office can file, or a PDF with the delivery photos and
-            document scans embedded. Both are handed to the OS share sheet. */}
-        <Text style={[styles.section, styles.sectionGap]}>DOWNLOAD REPORT</Text>
+        {/* The four papers the web admin produces for a trip, all handed to
+            the OS share sheet: the report as a filed workbook or as a PDF with
+            the photos and scans embedded, the customer's tax invoice, and the
+            proof of delivery with the driver's snaps at the drop. */}
+        <Text style={[styles.section, styles.sectionGap]}>DOWNLOADS</Text>
         <View style={styles.reportRow}>
           <Button
-            label="Excel"
+            label="Report Excel"
             variant="outline"
             icon="download"
             iconSize={14}
@@ -827,7 +984,7 @@ export const TripDetailsScreen: React.FC = () => {
             onPress={() => runExport('excel')}
           />
           <Button
-            label="PDF"
+            label="Report PDF"
             variant="outline"
             icon="file-text"
             iconSize={14}
@@ -839,6 +996,36 @@ export const TripDetailsScreen: React.FC = () => {
             loading={exporting === 'pdf'}
             disabled={exporting !== null}
             onPress={() => runExport('pdf')}
+          />
+        </View>
+        <View style={[styles.reportRow, styles.reportRowGap]}>
+          <Button
+            label="Invoice"
+            variant="outline"
+            icon="receipt"
+            iconSize={14}
+            flex={1}
+            padding={10}
+            fontSize={11}
+            gap={6}
+            borderColor={palette.border}
+            loading={exporting === 'invoice'}
+            disabled={exporting !== null}
+            onPress={() => runExport('invoice')}
+          />
+          <Button
+            label="Delivery Proof"
+            variant="outline"
+            icon="clipboard-check"
+            iconSize={14}
+            flex={1}
+            padding={10}
+            fontSize={11}
+            gap={6}
+            borderColor={palette.border}
+            loading={exporting === 'pod'}
+            disabled={exporting !== null}
+            onPress={() => runExport('pod')}
           />
         </View>
         </>
@@ -1078,6 +1265,8 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   reassignBtn: { marginTop: s(10) },
+  /* The completion card's heading row — icon beside the state it reports. */
+  approveHead: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
   gps: font(9, '800', { color: palette.gold }),
 
   customerRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
@@ -1125,6 +1314,9 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
   },
   reportRow: { flexDirection: 'row', gap: s(8), marginBottom: s(12) },
+  // The second pair sits tight under the first — one block of downloads, not
+  // two lists that happen to be near each other.
+  reportRowGap: { marginTop: s(-4) },
   docEmptyText: {
     ...font(9, '600', { color: palette.slate500 }),
     flex: 1,

@@ -111,6 +111,17 @@ export type RootStackParamList = {
 
   // Bookings & trips
   BookingReview: { bookingId: string };
+  /**
+   * The customer app's "Request a Vehicle" queue, and one request in full.
+   *
+   * The web panel has answered these since the queue existed; this app could
+   * not see them, so an operator away from a desk had no idea a customer was
+   * waiting on a lorry that is not in the catalogue.
+   */
+  /** The catalogue customers pick a lorry from — the panel's Vehicle Types. */
+  VehicleTypes: undefined;
+  VehicleRequests: undefined;
+  VehicleRequestDetails: { requestId: string };
   Trips: undefined;
   NewTrip: { driverId?: string; vehicleId?: string } | undefined;
   TripDetails: { tripId: string };
@@ -142,6 +153,8 @@ export type RootStackParamList = {
   // Account
   Documents: undefined;
   Notifications: undefined;
+  /** The office writing a notification of its own — owner and managers only. */
+  SendNotification: undefined;
   BusinessDetails: undefined;
   LogoutConfirm: undefined;
 };

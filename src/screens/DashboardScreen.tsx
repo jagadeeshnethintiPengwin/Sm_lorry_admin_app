@@ -11,6 +11,7 @@ import {
   Content,
   Icon,
   RadialGlow,
+  RouteView,
   Screen,
   TwinkleDot,
 } from '@components/index';
@@ -636,16 +637,35 @@ export const DashboardScreen: React.FC = () => {
                   <Text style={styles.tripRef}>#{activeTrip.reference}</Text>
                 </View>
 
-                {/* The route arrives joined; split back into the two ends. */}
-                <View style={styles.tripRoute}>
-                  <Text style={styles.tripCity} numberOfLines={1}>
-                    {(activeTrip.route ?? '').split('→')[0]?.trim() || '—'}
-                  </Text>
-                  <Icon name="arrow-right" size={14} color={palette.gold} />
-                  <Text style={styles.tripCity} numberOfLines={1}>
-                    {(activeTrip.route ?? '').split('→')[1]?.trim() || '—'}
-                  </Text>
-                </View>
+                {/*
+                  * The leg as a labelled column, not two halves of one row.
+                  *
+                  * Side by side, each end had half the card and both were
+                  * clipped to a single line — and two places in the same
+                  * district differ at the end of the name, which is exactly
+                  * what the ellipsis ate. The addresses come from the live
+                  * board now (it sends the ends as their own fields rather
+                  * than one string with an arrow in it), so the card names the
+                  * door when the booking carries one.
+                  */}
+                <RouteView
+                  pickup={
+                    activeTrip.pickupAddress ||
+                    activeTrip.pickupPlace ||
+                    (activeTrip.route ?? '').split('→')[0]?.trim() ||
+                    '—'
+                  }
+                  drop={
+                    activeTrip.dropAddress ||
+                    activeTrip.dropPlace ||
+                    (activeTrip.route ?? '').split('→')[1]?.trim() ||
+                    '—'
+                  }
+                  tone="onDark"
+                  compact
+                  pickupGap={6}
+                  style={styles.tripRoute}
+                />
 
                 <View style={styles.tripMeta}>
                   <Text style={styles.tripMetaText} numberOfLines={1}>
@@ -1022,25 +1042,7 @@ const styles = StyleSheet.create({
   tripStatus: { flexDirection: 'row', alignItems: 'center', gap: s(5) },
   tripStatusText: font(9, '800', { color: palette.gold, letterSpacing: 1 }),
   tripRef: font(10, '800', { color: palette.gold }),
-  tripRoute: { flexDirection: 'row', alignItems: 'center', gap: s(8) },
-  /*
-   * Allowed to shrink, which `numberOfLines` alone does not arrange.
-   *
-   * `flexShrink` defaults to 0 in React Native, so a Text in a row keeps its
-   * full intrinsic width and simply overflows the parent — `numberOfLines`
-   * caps the number of lines, not the width. The card used to hold "Vizag →
-   * Hyderabad" and fitted by luck; real bookings carry addresses like
-   * "Gachibowli 3rd Floor, Shresta Marvel, … Telangana 500032, India", which
-   * ran straight out of the card.
-   *
-   * `minWidth: 0` because a flex child's automatic minimum size is its content
-   * — without it the shrink is permitted and then refused.
-   */
-  tripCity: {
-    ...font(12, '800', { color: palette.white }),
-    flexShrink: 1,
-    minWidth: 0,
-  },
+  tripRoute: { marginTop: s(2) },
   tripMeta: {
     flexDirection: 'row',
     alignItems: 'center',

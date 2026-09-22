@@ -142,12 +142,23 @@ function adb(args, { quiet = false } = {}) {
 }
 
 try {
-  const devices = adb(['devices'], { quiet: true })
+  /*
+   * The serial of every attached device, not just how many there are.
+   *
+   * `adb reverse` without `-s` refuses to guess the moment a second device is
+   * visible — "adb: more than one device/emulator" — and a phone plugged in
+   * next to a running emulator is the ordinary case, not an exotic one. This
+   * caught it (`devices.length === 0`) and then dropped it, so every mapping
+   * failed and the only sign was one swallowed line: the app then reached
+   * neither Metro nor the API, which reads as a broken build.
+   */
+  const serials = adb(['devices'], { quiet: true })
     .split('\n')
     .slice(1)
-    .filter(line => line.trim().endsWith('device'));
+    .filter(line => line.trim().endsWith('device'))
+    .map(line => line.trim().split(/\s+/)[0]);
 
-  if (devices.length === 0) {
+  if (serials.length === 0) {
     // Not an error: plenty of runs are iOS, or an emulator that has not booted.
     console.log('reverse: no Android device attached — skipping');
     process.exit(0);
@@ -155,26 +166,39 @@ try {
 
   const metro = await metroPort();
 
-  adb(['reverse', `tcp:${API_PORT}`, `tcp:${API_PORT}`], { quiet: true });
-  adb(['reverse', `tcp:${DEVICE_METRO_PORT}`, `tcp:${metro}`], { quiet: true });
+  for (const serial of serials) {
+    const on = serials.length > 1 ? `  [${serial}]` : '';
+    try {
+      adb(['-s', serial, 'reverse', `tcp:${API_PORT}`, `tcp:${API_PORT}`], { quiet: true });
+      adb(['-s', serial, 'reverse', `tcp:${DEVICE_METRO_PORT}`, `tcp:${metro}`], { quiet: true });
 
-  /*
-   * 8081 as well, pointed at the same Metro.
-   *
-   * The port above is baked in at build time, so a copy of the app installed
-   * before it was set still asks for 8081 — and would find either nothing or
-   * another project's Metro. Mapping both means the build on the handset right
-   * now and the next one both reach the right server, and the spare mapping
-   * costs nothing once every build has caught up.
-   */
-  if (DEVICE_METRO_PORT !== '8081') {
-    adb(['reverse', 'tcp:8081', `tcp:${metro}`], { quiet: true });
+      /*
+       * 8081 as well, pointed at the same Metro.
+       *
+       * The port above is baked in at build time, so a copy of the app
+       * installed before it was set still asks for 8081 — and would find
+       * either nothing or another project's Metro. Mapping both means the
+       * build on the handset right now and the next one both reach the right
+       * server, and the spare mapping costs nothing once every build has
+       * caught up.
+       */
+      if (DEVICE_METRO_PORT !== '8081') {
+        adb(['-s', serial, 'reverse', 'tcp:8081', `tcp:${metro}`], { quiet: true });
+      }
+
+      console.log(`reverse: API      device:${API_PORT} -> ${API_PORT}${on}`);
+      console.log(`reverse: Metro    device:${DEVICE_METRO_PORT} -> ${metro}${on}`);
+      if (DEVICE_METRO_PORT !== '8081') {
+        console.log(`reverse: Metro    device:8081 -> ${metro}${on}   (builds made before the port was set)`);
+      }
+    } catch (error) {
+      // One handset asleep or unauthorised must not cost the others their
+      // mappings, so each is reported and the rest carry on.
+      console.log(`reverse: ${serial} skipped (${error.message.split('\n')[0]})`);
+    }
   }
 
-  console.log(`reverse: API      device:${API_PORT} -> ${API_PORT}`);
-  console.log(`reverse: Metro    device:${DEVICE_METRO_PORT} -> ${metro}`);
   if (DEVICE_METRO_PORT !== '8081') {
-    console.log(`reverse: Metro    device:8081 -> ${metro}   (builds made before the port was set)`);
 
     /*
      * Say plainly that the 8081 mapping is shared.

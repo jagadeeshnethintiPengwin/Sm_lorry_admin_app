@@ -134,10 +134,10 @@ if (__DEV__) {
  * to do with it — that reading sends somebody to their router while the real
  * cause is the handset's own connection.
  */
-const IS_LOCAL_API =
-  /^https?:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
+const IS_LOCAL_API = false;
+  /*/^https?:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
     API_ORIGIN,
-  );
+  );*/
 
 const DEFAULT_TIMEOUT = 20_000;
 

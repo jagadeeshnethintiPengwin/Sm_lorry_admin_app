@@ -99,6 +99,31 @@ function toRow(trip: LiveTrip) {
           ? 'Just now'
           : `${minutesSincePing} min ago`,
     tone,
+    /*
+     * Where this position came from, in the office's words.
+     *
+     * The board carries two feeds — the driver's phone and the lorry's own
+     * box — and this screen showed them identically, so an operator could not
+     * tell a trip being followed by the app from one being followed by the
+     * tracker. That is the first question asked when a lorry looks wrong on
+     * the map, because the answer decides who to ring: the driver, or the
+     * yard. The web panel has said which since it was built; this had not.
+     *
+     * `last-known` is neither: it is the last thing anyone heard, with nothing
+     * reporting now, and saying so is more use than implying a live feed.
+     */
+    source:
+      trip.source === 'app'
+        ? 'Driver phone'
+        : trip.source === 'tracker'
+          ? 'Lorry tracker'
+          : 'Last known',
+    sourceTone:
+      trip.source === 'app'
+        ? ('gold' as const)
+        : trip.source === 'tracker'
+          ? ('navy' as const)
+          : ('muted' as const),
     position: trip.location
       ? { latitude: trip.location.lat, longitude: trip.location.lng }
       : null,
@@ -139,8 +164,15 @@ export const LiveFleetMapScreen: React.FC = () => {
       /*
        * Re-read while the screen is open. A live map that only loads once is a
        * screenshot; the office leaves this open on a desk.
+       *
+       * Three seconds, the rate the driver app reports at, so the board shows
+       * every position the server is given rather than one in seven. At twenty
+       * it was the slowest part of the chain: a lorry jumped a whole block
+       * between refreshes while the server had held the intervening fixes all
+       * along. The screen stops polling when it loses focus —
+       * `useFocusEffect` clears this — so it costs nothing on another tab.
        */
-      const timer = setInterval(load, 20_000);
+      const timer = setInterval(load, 3_000);
       return () => clearInterval(timer);
     }, [load]),
   );
@@ -271,6 +303,21 @@ export const LiveFleetMapScreen: React.FC = () => {
               <Text style={styles.selectedDriver} numberOfLines={1}>
                 {selected.driver}
               </Text>
+              <View style={styles.sourceRow}>
+                <View
+                  style={[
+                    styles.sourceDot,
+                    selected.sourceTone === 'gold'
+                      ? { backgroundColor: palette.gold }
+                      : selected.sourceTone === 'navy'
+                        ? { backgroundColor: palette.navy }
+                        : { backgroundColor: palette.slate400 },
+                  ]}
+                />
+                <Text style={styles.sourceText}>
+                  Tracking via {selected.source.toLowerCase()}
+                </Text>
+              </View>
               <View style={styles.selectedFoot}>
                 <Text style={styles.selectedRoute} numberOfLines={1}>
                   {selected.route}
@@ -377,6 +424,23 @@ export const LiveFleetMapScreen: React.FC = () => {
                     {vehicle.driver}
                   </Text>
 
+                  {/* Which feed placed this lorry — the same thing the web
+                      panel badges, and the first question asked when one looks
+                      wrong on the map. */}
+                  <View style={styles.sourceRow}>
+                    <View
+                      style={[
+                        styles.sourceDot,
+                        vehicle.sourceTone === 'gold'
+                          ? { backgroundColor: palette.gold }
+                          : vehicle.sourceTone === 'navy'
+                            ? { backgroundColor: palette.navy }
+                            : { backgroundColor: palette.slate400 },
+                      ]}
+                    />
+                    <Text style={styles.sourceText}>{vehicle.source}</Text>
+                  </View>
+
                   <View style={styles.fleetFoot}>
                     <Text style={styles.fleetRoute} numberOfLines={1}>
                       {vehicle.route}
@@ -396,6 +460,9 @@ export const LiveFleetMapScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  sourceRow: { flexDirection: 'row', alignItems: 'center', marginTop: s(3) },
+  sourceDot: { width: 6, height: 6, borderRadius: 3, marginRight: s(5) },
+  sourceText: font(9, '700', { color: palette.slate500 }),
   /*
    * Anchored to the bottom of the map, clear of the legend in the top-left.
    * A plain view, so nothing about it is subject to the marker bitmap that

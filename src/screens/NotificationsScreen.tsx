@@ -3,7 +3,17 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { AppHeader, Content, Icon, ListState, Screen } from '@components/index';
+import {
+  AppHeader,
+  Button,
+  Content,
+  Footer,
+  Icon,
+  ListState,
+  Screen,
+} from '@components/index';
+import { useAppSelector } from '@store/index';
+import { authService } from '@services/auth.service';
 import { palette } from '@theme/colors';
 import { font } from '@theme/fonts';
 import { radius } from '@theme/radius';
@@ -236,6 +246,27 @@ export const NotificationsScreen: React.FC = () => {
     [],
   );
 
+  /*
+   * Writing a notification is offered to the owner and managers only.
+   *
+   * `POST /notifications` is restricted to those two roles — a message to every
+   * driver in the fleet is not a dispatcher's to send — so the button is hidden
+   * for everyone else rather than left to answer 403 after a message has been
+   * written. An account whose role is not known yet is treated as not allowed.
+   *
+   * Asked of the server rather than only of redux: the store holds a profile
+   * from the moment of sign-in and nothing restores it afterwards, so on every
+   * later launch — which is most of them — `auth.profile` is null and a gate
+   * reading only that would hide the button from the owner. The cached value is
+   * still preferred while the request is in flight, so the row does not appear
+   * a beat late for someone who has just signed in. (The dashboard reads the
+   * account the same way, for the same reason.)
+   */
+  const cachedRole = useAppSelector(state => state.auth.profile?.role);
+  const account = useApi(() => authService.getProfile(), []);
+  const role = cachedRole ?? account.data?.role;
+  const canSend = role === 'OWNER' || role === 'MANAGER';
+
   const items = useMemo(
     () => (data ?? []).map(row => toItem(row as Record<string, unknown>)),
     [data],
@@ -377,7 +408,9 @@ export const NotificationsScreen: React.FC = () => {
         rightAccessibilityLabel={`Mark all ${shownUnread} notifications as read`}
       />
 
-      <Content padding={12} safeBottom>
+      {/* The home-indicator inset belongs to whichever of the two is last on
+          screen — the footer when there is one, the list when there is not. */}
+      <Content padding={12} safeBottom={!canSend}>
         <ListState
           loading={loading}
           error={error}
@@ -399,6 +432,30 @@ export const NotificationsScreen: React.FC = () => {
           </React.Fragment>
         ))}
       </Content>
+
+      {/*
+        * The way into the composer — a solid action bar, not a row in the feed.
+        *
+        * It was first drawn as a gold-tinted card at the top of the list, which
+        * is precisely what an unread booking notification looks like here:
+        * same tint, same round icon tile, same two lines of text. It read as
+        * something that had arrived rather than something to press. The footer
+        * is where every other screen in this app puts the one thing you came to
+        * do, so the feed is read above it and the action is unmistakable — and
+        * "Send a Notification" says what it does without needing a caption.
+        */}
+      {canSend ? (
+        <Footer>
+          <Button
+            label="Send a Notification"
+            variant="gold"
+            icon="send"
+            padding={12}
+            fontSize={13}
+            onPress={() => navigation.navigate('SendNotification')}
+          />
+        </Footer>
+      ) : null}
     </Screen>
   );
 };

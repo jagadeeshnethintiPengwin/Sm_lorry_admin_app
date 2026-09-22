@@ -47,6 +47,36 @@ export type ReportDef = {
   value: ((r: ReportRow) => string) | null;
   /** What a search box matches against. */
   search: (r: ReportRow) => string;
+  /**
+   * The columns an exported table carries — the same headings the web panel's
+   * report table shows, so a workbook written from the phone and one written
+   * from the browser are the same file. The card list on screen shows a
+   * summary of these; an export is not the place to lose the rest.
+   */
+  headers: string[];
+  row: (r: ReportRow) => string[];
+  /**
+   * The trip this row is about, for the per-row document downloads — the trip
+   * report, and the invoice on the reports that bill one. Absent on the
+   * reports whose rows are not trips (a lorry, a driver, an account), which is
+   * what hides those buttons there.
+   */
+  tripRef?: (r: ReportRow) => string;
+};
+
+/** `2026-09-08T…` → `08 Sep 2026`, or a dash. */
+const dateCol = (v: unknown): string => {
+  if (v == null || v === '') {
+    return '—';
+  }
+  const when = new Date(String(v));
+  return Number.isNaN(when.getTime())
+    ? '—'
+    : when.toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
 };
 
 export const REPORT_DEFS: ReportDef[] = [
@@ -69,6 +99,25 @@ export const REPORT_DEFS: ReportDef[] = [
       ]
         .map(text)
         .join(' '),
+    headers: [
+      'Trip ID',
+      'Customer',
+      'Vehicle',
+      'Route',
+      'Driver',
+      'Revenue',
+      'Delivered',
+    ],
+    row: r => [
+      text(at(r, 'reference')),
+      text(at(r, 'booking.customer.company')),
+      text(at(r, 'vehicle.registration')),
+      `${text(at(r, 'booking.pickupPlace'))} → ${text(at(r, 'booking.dropPlace'))}`,
+      text(at(r, 'driver.user.name')),
+      rupee(at(r, 'booking.fareEstimate')),
+      dateCol(at(r, 'deliveredAt')),
+    ],
+    tripRef: r => String(at(r, 'reference') ?? ''),
   },
   {
     kind: 'invoice',
@@ -83,6 +132,16 @@ export const REPORT_DEFS: ReportDef[] = [
       [at(r, 'booking.reference'), at(r, 'booking.customer.company'), at(r, 'reference')]
         .map(text)
         .join(' '),
+    headers: ['Invoice No', 'Trip ID', 'Customer', 'Amount', 'GST', 'Delivered'],
+    row: r => [
+      text(at(r, 'booking.reference')),
+      text(at(r, 'reference')),
+      text(at(r, 'booking.customer.company')),
+      rupee(at(r, 'booking.fareEstimate')),
+      rupee(at(r, 'booking.gstAmount')),
+      dateCol(at(r, 'deliveredAt')),
+    ],
+    tripRef: r => String(at(r, 'reference') ?? ''),
   },
   {
     kind: 'vehicles',
@@ -98,6 +157,26 @@ export const REPORT_DEFS: ReportDef[] = [
       [at(r, 'registration'), at(r, 'type'), at(r, 'driver.user.name')]
         .map(text)
         .join(' '),
+    headers: [
+      'Reg Number',
+      'Type',
+      'Driver',
+      'Trips',
+      'Revenue',
+      'Expenses',
+      'Status',
+      'Added',
+    ],
+    row: r => [
+      text(at(r, 'registration')),
+      text(at(r, 'type')),
+      text(at(r, 'driver.user.name')),
+      text(at(r, 'tripCount')),
+      rupee(at(r, 'revenue')),
+      rupee(at(r, 'expenses')),
+      text(at(r, 'status')),
+      dateCol(at(r, 'createdAt')),
+    ],
   },
   {
     kind: 'drivers',
@@ -113,6 +192,26 @@ export const REPORT_DEFS: ReportDef[] = [
       [at(r, 'user.name'), at(r, 'user.mobile'), at(r, 'vehicle.registration')]
         .map(text)
         .join(' '),
+    headers: [
+      'Driver',
+      'Mobile',
+      'Vehicle',
+      'Trips',
+      'Expenses',
+      'Rating',
+      'Status',
+      'Joined',
+    ],
+    row: r => [
+      text(at(r, 'user.name')),
+      text(at(r, 'user.mobile')),
+      text(at(r, 'vehicle.registration')),
+      text(at(r, 'totalTrips')),
+      rupee(at(r, 'expenses')),
+      text(at(r, 'rating')),
+      text(at(r, 'status')),
+      dateCol(at(r, 'joinedAt')),
+    ],
   },
   {
     kind: 'customers',
@@ -127,6 +226,15 @@ export const REPORT_DEFS: ReportDef[] = [
       [at(r, 'company'), at(r, 'contactName'), at(r, 'city'), at(r, 'state')]
         .map(text)
         .join(' '),
+    headers: ['Company', 'Contact', 'Location', 'Bookings', 'Revenue', 'Since'],
+    row: r => [
+      text(at(r, 'company')),
+      text(at(r, 'contactName')),
+      `${text(at(r, 'city'))}, ${text(at(r, 'state'))}`,
+      text(at(r, '_count.bookings')),
+      rupee(at(r, 'revenue')),
+      dateCol(at(r, 'since')),
+    ],
   },
 ];
 

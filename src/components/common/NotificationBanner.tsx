@@ -1,5 +1,13 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  AppState,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  Vibration,
+  View,
+} from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -131,6 +139,11 @@ const NotificationBannerComponent: React.FC<{
         const { notification, data } = remote;
         if (!notification?.title) {
           return;
+        }
+        // A halt while the app is open: the OS won't ring the alarm channel
+        // for a foregrounded app, so buzz the same rhythm to match it.
+        if (data?.category === 'GPS') {
+          Vibration.vibrate([0, 400, 200, 400, 200, 400]);
         }
         show({
           id: String(data?.id ?? remote.messageId ?? notification.title),

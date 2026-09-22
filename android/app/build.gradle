@@ -91,7 +91,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "0.0.1"
 
         // Maps key read from local.properties (gitignored) and injected into
         // AndroidManifest as ${MAPS_API_KEY}.

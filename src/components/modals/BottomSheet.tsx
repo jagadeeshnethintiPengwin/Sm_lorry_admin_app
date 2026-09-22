@@ -1,5 +1,14 @@
 import React, { memo } from 'react';
-import { Modal, Pressable, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleProp,
+  StyleSheet,
+  View,
+  ViewStyle,
+} from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 
 import { useSheetBottom } from '@hooks/useSafeBottom';
@@ -35,6 +44,24 @@ export type BottomSheetProps = {
   paddingHorizontal?: number;
   paddingTop?: number;
   paddingBottom?: number;
+  /**
+   * Scrolls the sheet's body and keeps it clear of the keyboard.
+   *
+   * Opt-in, because most sheets here are a title and two buttons and a
+   * ScrollView around those would add a scroll container that never scrolls.
+   * A sheet carrying a form needs it: without it a six-field form runs off the
+   * top of the screen with no way to reach the rest, and the keyboard covers
+   * whichever field is being typed into.
+   */
+  scrollable?: boolean;
+  /**
+   * How much of the screen a scrollable sheet may take before it scrolls.
+   *
+   * Not the whole height: the scrim above has to stay visible, or the sheet
+   * reads as a page that arrived from nowhere rather than something laid over
+   * the list — and there is nothing left to tap to dismiss it.
+   */
+  maxHeightRatio?: number;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -48,6 +75,8 @@ const BottomSheetComponent: React.FC<BottomSheetProps> = ({
   paddingHorizontal = 16,
   paddingTop = 18,
   paddingBottom = 16,
+  scrollable = false,
+  maxHeightRatio = 0.88,
   style,
 }) => {
   // Capped rather than raw: this modal covers the system bars, and the inset
@@ -98,7 +127,32 @@ const BottomSheetComponent: React.FC<BottomSheetProps> = ({
           ]}
         >
           {showHandle ? <View style={styles.handle} /> : null}
-          {children}
+          {scrollable ? (
+            /*
+             * `padding` on both platforms rather than `height` on Android.
+             *
+             * The app is `adjustResize`, which normally lifts content by
+             * itself — but this sheet lives in a modal window that spans the
+             * system bars, and such a window is not resized when the keyboard
+             * opens. Left to the default the keyboard simply covers the field
+             * being typed into.
+             */
+            <KeyboardAvoidingView
+              behavior="padding"
+              style={{ maxHeight: sheet.height * maxHeightRatio }}
+            >
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+                contentContainerStyle={styles.scrollContent}
+              >
+                {children}
+              </ScrollView>
+            </KeyboardAvoidingView>
+          ) : (
+            children
+          )}
         </Animated.View>
       </Animated.View>
     </Modal>
@@ -106,6 +160,9 @@ const BottomSheetComponent: React.FC<BottomSheetProps> = ({
 };
 
 const styles = StyleSheet.create({
+  /* A little room under the last control so it is not flush with the edge of
+     the sheet when the content is long enough to scroll. */
+  scrollContent: { paddingBottom: s(4) },
   scrim: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',

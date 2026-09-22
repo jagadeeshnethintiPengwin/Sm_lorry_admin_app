@@ -115,6 +115,28 @@ export const MenuScreen: React.FC = () => {
       go: () => navigation.navigate('Trips'),
     },
     {
+      id: 'vehicle-types',
+      title: 'Vehicle Types',
+      // The catalogue a customer picks from — selecting a type here is what
+      // puts it in front of them, so it belongs where the office can reach it.
+      meta: 'What customers can book',
+      icon: 'truck',
+      bg: palette.navyTint,
+      color: palette.navy,
+      go: () => navigation.navigate('VehicleTypes'),
+    },
+    {
+      id: 'vehicle-requests',
+      title: 'Vehicle Requests',
+      // The queue a customer files into when the lorry they need is not in the
+      // catalogue. It had no way in on this app at all.
+      meta: 'Customer asks for a lorry',
+      icon: 'package-search',
+      bg: palette.goldTint,
+      color: palette.gold,
+      go: () => navigation.navigate('VehicleRequests'),
+    },
+    {
       id: 'documents',
       title: 'Documents',
       // No count in the dashboard summary, so a description rather than an

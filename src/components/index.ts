@@ -30,6 +30,7 @@ export * from './buttons/Button';
 // Inputs
 export * from './inputs/Input';
 export * from './inputs/PlaceInput';
+export * from './inputs/CustomerPicker';
 export * from './inputs/Select';
 export * from './inputs/Field';
 
