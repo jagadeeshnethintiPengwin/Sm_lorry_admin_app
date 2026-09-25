@@ -33,6 +33,7 @@ export * from './inputs/PlaceInput';
 export * from './inputs/CustomerPicker';
 export * from './inputs/Select';
 export * from './inputs/Field';
+export * from './inputs/OtpInput';
 
 // Modals
 export * from './modals/BottomSheet';

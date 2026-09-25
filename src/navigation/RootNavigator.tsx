@@ -34,6 +34,7 @@ import { DocumentsScreen } from '@screens/DocumentsScreen';
 import { NotificationsScreen } from '@screens/NotificationsScreen';
 import { SendNotificationScreen } from '@screens/SendNotificationScreen';
 import { BusinessDetailsScreen } from '@screens/BusinessDetailsScreen';
+import { DeleteAccountScreen } from '@screens/DeleteAccountScreen';
 import { LogoutConfirmScreen } from '@screens/LogoutConfirmScreen';
 import { ReportsScreen } from '@screens/ReportsScreen';
 import { ReportViewScreen } from '@screens/ReportViewScreen';
@@ -166,6 +167,7 @@ export const RootNavigator: React.FC = () => {
           component={SendNotificationScreen}
         />
         <Stack.Screen name="BusinessDetails" component={BusinessDetailsScreen} />
+        <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} />
         <Stack.Screen
           name="LogoutConfirm"
           component={LogoutConfirmScreen}

@@ -156,6 +156,8 @@ export type RootStackParamList = {
   /** The office writing a notification of its own — owner and managers only. */
   SendNotification: undefined;
   BusinessDetails: undefined;
+  /** Permanently deleting the signed-in account — App Store 5.1.1(v) / Play. */
+  DeleteAccount: undefined;
   LogoutConfirm: undefined;
 };
 

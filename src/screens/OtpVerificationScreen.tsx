@@ -1,17 +1,18 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  StyleSheet,
-  Text,
-  TextInput,
-  TextInputInstance,
-  View,
-} from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { Button, Callout, Icon, RadarRing, Screen } from '@components/index';
+import {
+  Button,
+  Callout,
+  Icon,
+  OtpInput,
+  RadarRing,
+  Screen,
+} from '@components/index';
 import { useAppDispatch } from '@store/index';
 import { verifyOtp } from '@store/slices/auth.slice';
 import { authService } from '@services/auth.service';
@@ -30,7 +31,6 @@ import type { AuthStackParamList, RootStackParamList } from '@navigation/types';
  *   phone chip · white card with six 36×46 boxes (filled = gold border on
  *   #fff7e0) · gold Verify & Continue · "Resend in 32s" · gold expiry note
  */
-const CODE_LENGTH = 6;
 const RESEND_SECONDS = 32;
 
 /**
@@ -56,10 +56,8 @@ export const OtpVerificationScreen: React.FC = () => {
   const [seconds, setSeconds] = useState(RESEND_SECONDS);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  // `TextInputInstance`, not `TextInput`: as of React Native 0.87 the name
-  // `TextInput` used in type position is the component, not what a ref to one
-  // holds, so it no longer carries `focus`/`blur`.
-  const inputs = useRef<Array<TextInputInstance | null>>([]);
+  /* Bumped to put the cursor back in the first box once they are emptied. */
+  const [focusSignal, setFocusSignal] = useState(0);
 
   useEffect(() => {
     if (seconds <= 0) {
@@ -95,7 +93,7 @@ export const OtpVerificationScreen: React.FC = () => {
       );
       setSeconds(RESEND_SECONDS);
       setCode(INITIAL_CODE);
-      inputs.current[0]?.focus();
+      setFocusSignal(current => current + 1);
     } catch (error) {
       setFailure(
         (error as Error)?.message ||
@@ -105,27 +103,6 @@ export const OtpVerificationScreen: React.FC = () => {
       setResending(false);
     }
   }, [route.params.mobile, route.params.verificationId]);
-
-  const handleChange = useCallback((value: string, index: number) => {
-    const digit = value.replace(/[^0-9]/g, '').slice(-1);
-    setCode(current => {
-      const next = [...current];
-      next[index] = digit;
-      return next;
-    });
-    if (digit && index < CODE_LENGTH - 1) {
-      inputs.current[index + 1]?.focus();
-    }
-  }, []);
-
-  const handleKeyPress = useCallback(
-    (key: string, index: number) => {
-      if (key === 'Backspace' && !code[index] && index > 0) {
-        inputs.current[index - 1]?.focus();
-      }
-    },
-    [code],
-  );
 
   const complete = useMemo(() => code.every(digit => digit !== ''), [code]);
 
@@ -179,7 +156,7 @@ export const OtpVerificationScreen: React.FC = () => {
           'That code was not accepted. Check it and try again.',
       );
       setCode(INITIAL_CODE);
-      inputs.current[0]?.focus();
+      setFocusSignal(current => current + 1);
     } finally {
       setBusy(false);
     }
@@ -222,25 +199,11 @@ export const OtpVerificationScreen: React.FC = () => {
         <View style={styles.card}>
           <Text style={styles.hint}>Enter the 6-digit code we sent</Text>
 
-          <View style={styles.boxes}>
-            {code.map((digit, index) => (
-              <TextInput
-                key={index}
-                ref={element => {
-                  inputs.current[index] = element;
-                }}
-                value={digit}
-                onChangeText={value => handleChange(value, index)}
-                onKeyPress={event => handleKeyPress(event.nativeEvent.key, index)}
-                keyboardType="number-pad"
-                maxLength={1}
-                placeholder="•"
-                placeholderTextColor={palette.slate400}
-                style={[styles.box, digit ? styles.boxFilled : null]}
-                accessibilityLabel={`Digit ${index + 1} of ${CODE_LENGTH}`}
-              />
-            ))}
-          </View>
+          <OtpInput
+            value={code}
+            onChange={setCode}
+            focusSignal={focusSignal}
+          />
         </View>
 
         <View style={styles.actions}>
@@ -365,27 +328,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: s(12),
   },
-  boxes: {
-    flexDirection: 'row',
-    gap: s(6),
-    justifyContent: 'center',
-    marginBottom: s(6),
-  },
-  box: {
-    width: s(36),
-    height: s(46),
-    borderWidth: s(1.5),
-    borderColor: palette.gray200,
-    borderRadius: radius.lg,
-    textAlign: 'center',
-    ...font(18, '800', { color: palette.slate400 }),
-  },
-  boxFilled: {
-    borderColor: palette.gold,
-    backgroundColor: palette.goldTint,
-    color: palette.navy,
-  },
-
   actions: { paddingTop: s(14), paddingHorizontal: s(20) },
   resend: {
     ...font(10, '600', { color: palette.slate500 }),

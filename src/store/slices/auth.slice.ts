@@ -62,6 +62,14 @@ const authSlice = createSlice({
     setMobile(state, action: PayloadAction<string>) {
       state.mobile = action.payload;
     },
+    /**
+     * The session ended without a sign-out — the account was deleted, and the
+     * server revoked its tokens itself. Nothing of it is kept: not the profile,
+     * and not the number the sign-in form was last given.
+     */
+    sessionCleared() {
+      return initialState;
+    },
   },
   extraReducers: builder => {
     builder
@@ -111,5 +119,5 @@ const authSlice = createSlice({
   },
 });
 
-export const { setMobile } = authSlice.actions;
+export const { setMobile, sessionCleared } = authSlice.actions;
 export default authSlice.reducer;

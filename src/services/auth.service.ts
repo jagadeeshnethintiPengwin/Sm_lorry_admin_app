@@ -29,6 +29,20 @@ export type PinLoginResponse =
   | { pinSet: false; mobile: string }
   | ({ pinSet: true } & VerifyOtpResponse);
 
+/**
+ * Forgets the session on this handset, and tells nobody.
+ *
+ * The local half of `logout`, on its own for the one case where there is no
+ * server half: a deleted account. The API revokes every token the moment the
+ * deletion succeeds, so a `/auth/logout` after it would only 401 — what is
+ * left is to drop the stored credentials and the socket they authenticated.
+ */
+export async function clearLocalSession(): Promise<void> {
+  await setAuthToken(null);
+  /* The socket is authenticated by the token that just went; drop it too. */
+  disconnectRealtime();
+}
+
 export const authService = {
   /** POST /auth/pin/status — whether this number signs in with a PIN. */
   async pinStatus(mobile: string): Promise<{ pinSet: boolean }> {
@@ -268,9 +282,7 @@ export const authService = {
      * handing over a phone wants it signed out now, not once a server has
      * agreed. Locally it is already gone by the time the request is made.
      */
-    await setAuthToken(null);
-    /* The socket is authenticated by the token that just went; drop it too. */
-    disconnectRealtime();
+    await clearLocalSession();
 
     /*
      * Bounded well under the client default. Revocation matters, but a slow

@@ -40,6 +40,8 @@ type MenuRow = {
   bg: string;
   color: string;
   pill?: string;
+  /** Destructive: the title takes the row's red rather than navy. */
+  danger?: boolean;
   go: () => void;
 };
 
@@ -192,6 +194,18 @@ export const MenuScreen: React.FC = () => {
       color: palette.gold,
       go: () => undefined,
     },
+    {
+      // Last in the group, directly above Logout — the App Store and Play both
+      // require the account to be deletable from inside the app.
+      id: 'delete-account',
+      title: 'Delete account',
+      meta: 'Permanently delete your account',
+      icon: 'trash-2',
+      bg: palette.redTint,
+      color: palette.red,
+      danger: true,
+      go: () => navigation.navigate('DeleteAccount'),
+    },
   ];
 
   const logout = useCallback(
@@ -222,7 +236,9 @@ export const MenuScreen: React.FC = () => {
             borderRadius={radius.md}
           />
           <View style={styles.rowBody}>
-            <Text style={styles.rowTitle}>{row.title}</Text>
+            <Text style={[styles.rowTitle, row.danger && styles.rowTitleDanger]}>
+              {row.title}
+            </Text>
             <Text style={styles.rowMeta}>{row.meta}</Text>
           </View>
 
@@ -468,6 +484,7 @@ const styles = StyleSheet.create({
   },
   rowBody: { flex: 1 },
   rowTitle: font(11, '800', { color: palette.navy }),
+  rowTitleDanger: { color: palette.red },
   rowMeta: {
     ...font(9, '400', { color: palette.slate500 }),
     marginTop: s(1),

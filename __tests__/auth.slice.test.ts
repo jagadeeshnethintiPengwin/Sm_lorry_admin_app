@@ -9,7 +9,11 @@
  */
 jest.mock('@services/auth.service', () => ({ authService: {} }));
 
-import authReducer, { login, logout } from '../src/store/slices/auth.slice';
+import authReducer, {
+  login,
+  logout,
+  sessionCleared,
+} from '../src/store/slices/auth.slice';
 import type { OwnerProfile } from '../src/types';
 
 const EMAIL = 'owner@simhadritransport.in';
@@ -74,5 +78,20 @@ describe('auth slice — email/password sign-in', () => {
     );
     expect(next.isAuthenticated).toBe(false);
     expect(next.profile).toBeNull();
+  });
+
+  it('forgets everything on sessionCleared (a deleted account)', () => {
+    const signedIn = authReducer(
+      undefined,
+      login.fulfilled({ token: 't', profile: PROFILE }, 'req-6', {
+        email: EMAIL,
+        password: 'admin1234',
+      }),
+    );
+    const next = authReducer(signedIn, sessionCleared());
+    expect(next.isAuthenticated).toBe(false);
+    expect(next.profile).toBeNull();
+    expect(next.verificationId).toBeNull();
+    expect(next.mobile).toBe('');
   });
 });
