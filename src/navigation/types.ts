@@ -145,6 +145,11 @@ export type RootStackParamList = {
     } | null;
   };
   PodViewer: { tripId: string };
+  /**
+   * The office asking the customer for papers on a trip. `reference` and
+   * `customerName` only dress the header and the confirmation.
+   */
+  RequestDocuments: { tripId: string; reference?: string; customerName?: string };
 
   // Reports
   Reports: undefined;

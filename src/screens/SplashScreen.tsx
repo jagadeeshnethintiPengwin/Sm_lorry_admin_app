@@ -184,10 +184,10 @@ export const SplashScreen: React.FC = () => {
         {/* Logo card */}
         <View style={styles.logoCard}>
           <Image
-            source={require('@assets/images/logo.png')}
+            source={require('@assets/images/admin-logo.png')}
             style={styles.logo}
             resizeMode="contain"
-            accessibilityLabel="SMT Simhadri Transport"
+            accessibilityLabel="SMT Simhadri Transport — Admin"
           />
         </View>
 
@@ -236,23 +236,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
+  /*
+   * The admin lockup is about 2:1 and carries small print, so it gets a larger
+   * box than the old wordmark did. The card is placed so its middle stays on
+   * the radar's centre (top 170 + 160 / 2 = 250), and the tagline moves down
+   * by what the card grew, keeping the same gap beneath it.
+   */
   logoCard: {
     position: 'absolute',
-    top: s(200),
+    top: s(194),
     alignSelf: 'center',
     backgroundColor: palette.white,
-    paddingVertical: s(14),
-    paddingHorizontal: s(20),
+    paddingVertical: s(10),
+    paddingHorizontal: s(12),
     borderRadius: radius.x20,
     borderWidth: s(3),
     borderColor: alpha.gold25,
     ...shadows.splashLogo,
   },
-  logo: { height: s(48), width: s(120) },
+  /*
+   * 707×353 source: the width sets the size and the ratio keeps it uncropped.
+   * At 170 it draws at roughly the file's own pixel width on a 3× phone, so
+   * it is not blown up into blur.
+   */
+  logo: { width: s(170), aspectRatio: 707 / 353 },
 
   taglineBlock: {
     position: 'absolute',
-    top: s(310),
+    top: s(332),
     left: 0,
     right: 0,
     alignItems: 'center',

@@ -40,7 +40,12 @@ const ICON_FOR_STAGE: Record<string, IconName> = {
   ASSIGNED: 'user-check',
   PICKUP_COMPLETED: 'package-check',
   STARTED: 'truck',
+  // The three sign-offs that close a trip: the driver's hand-over, the
+  // customer's confirmation (their own, or recorded by the office), and the
+  // office's approval.
   DELIVERED: 'package-check',
+  CUSTOMER_CONFIRMED: 'badge-check',
+  COMPLETION_APPROVED: 'check-circle-2',
   CANCELLED: 'alert-circle',
 };
 
@@ -72,8 +77,11 @@ function stampOf(iso: string): string {
  *
  * Only the trailing steps are invented: a running trip gets a live step
  * carrying its real distance, and a trip that has not yet been delivered shows
- * that as pending. A cancelled trip ends where it stopped — offering "Delivered
- * · awaiting" under a cancellation would be nonsense.
+ * that as pending. A delivered one that is not yet closed shows what it is
+ * still waiting on — the customer's confirmation, then the office's approval —
+ * since it stays IN_TRANSIT until both are in. A cancelled trip ends where it
+ * stopped — offering "Delivered · awaiting" under a cancellation would be
+ * nonsense.
  */
 function buildSteps(trip: AdminTrip | null): TimelineStep[] {
   if (!trip) {
@@ -114,6 +122,29 @@ function buildSteps(trip: AdminTrip | null): TimelineStep[] {
 
   const covered = Number(trip.coveredKm ?? 0);
   const distance = Number(trip.distanceKm ?? 0);
+  const delivered = Boolean(trip.deliveredAt) || status === 'DELIVERED';
+
+  if (delivered) {
+    if (trip.completionApprovedAt) {
+      return steps;
+    }
+    // A trip delivered before confirmations existed only needs the office.
+    if (!trip.customerConfirmedAt && status !== 'DELIVERED') {
+      steps.push({
+        title: 'Customer confirmation',
+        detail: 'Waiting for the customer to confirm',
+        state: 'pending',
+        icon: 'badge-check',
+      });
+    }
+    steps.push({
+      title: 'Trip completion',
+      detail: 'Office approval — frees the lorry and driver',
+      state: 'pending',
+      icon: 'check-circle-2',
+    });
+    return steps;
+  }
 
   if (status === 'IN_TRANSIT') {
     steps.push({
@@ -128,14 +159,12 @@ function buildSteps(trip: AdminTrip | null): TimelineStep[] {
     });
   }
 
-  if (status !== 'DELIVERED') {
-    steps.push({
-      title: 'Delivered',
-      detail: 'POD upload & end trip',
-      state: 'pending',
-      icon: 'package-check',
-    });
-  }
+  steps.push({
+    title: 'Delivered',
+    detail: 'POD upload & end trip',
+    state: 'pending',
+    icon: 'package-check',
+  });
 
   return steps;
 }

@@ -26,6 +26,7 @@ import {
   HaltUpdates,
   Icon,
   IconWell,
+  Input,
   ListState,
   RadialGlow,
   Screen,
@@ -43,6 +44,7 @@ import {
   tripService,
   type AdminDocument,
   type Halt,
+  type TripDocumentRequest,
   type TripFinance,
 } from '@services/fleet.service';
 import {
@@ -70,6 +72,8 @@ type Dialog = {
   title: string;
   message: string;
   confirmLabel: string;
+  /** Only a decision offers a way out; a result or failure just closes. */
+  cancelLabel?: string;
   onConfirm: () => void;
 };
 
@@ -95,6 +99,32 @@ const DOC_STYLE: Record<
   OTHER: { label: 'Document', icon: 'file-text', bg: palette.navyTint, color: palette.navy },
 };
 
+/**
+ * How a document request's state reads — asked and waiting, answered with a
+ * file, or withdrawn by the office before anyone answered it.
+ */
+const REQUEST_STATUS: Record<
+  TripDocumentRequest['status'],
+  { label: string; icon: IconName; bg: string; color: string }
+> = {
+  PENDING: { label: 'Pending', icon: 'clock', bg: palette.goldSoft, color: palette.goldText },
+  FULFILLED: { label: 'Received', icon: 'file-check', bg: palette.greenTint, color: palette.green },
+  CANCELLED: { label: 'Withdrawn', icon: 'x', bg: palette.gray200, color: palette.slate500 },
+};
+
+/** `2026-09-26T05:12:00Z` -> `26 Sep, 10:42 am`, or blank when unreadable. */
+function formatWhen(iso: string | null | undefined): string {
+  const at = iso ? new Date(iso) : null;
+  return at && !Number.isNaN(at.getTime())
+    ? at.toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
+}
+
 /** `12326` -> `12 KB`. Bytes are what the API stores; nobody reads bytes. */
 function formatSize(bytes: number): string {
   if (!bytes) {
@@ -104,6 +134,71 @@ function formatSize(bytes: number): string {
     ? `${Math.max(1, Math.round(bytes / 1024))} KB`
     : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/**
+ * One line of the completion checklist — a numbered disc that turns into a
+ * green tick once that party has signed off, what they did, and whatever the
+ * office can do about it underneath.
+ */
+const CompletionStep: React.FC<{
+  n: number;
+  done: boolean;
+  title: string;
+  detail?: string;
+  note?: string | null;
+  /** Hairline above — every step after the first. */
+  divided?: boolean;
+  children?: React.ReactNode;
+}> = ({ n, done, title, detail, note, divided, children }) => (
+  <View style={[stepStyles.row, divided && stepStyles.divided]}>
+    <View style={[stepStyles.disc, done && stepStyles.discDone]}>
+      {done ? (
+        <Icon name="check" size={12} color={palette.white} strokeWidth={3} />
+      ) : (
+        <Text style={stepStyles.discText}>{n}</Text>
+      )}
+    </View>
+    <View style={stepStyles.body}>
+      <Text style={[stepStyles.title, done && stepStyles.titleDone]}>
+        {title}
+      </Text>
+      {detail ? <Text style={stepStyles.detail}>{detail}</Text> : null}
+      {note ? <Text style={stepStyles.note}>{note}</Text> : null}
+      {children}
+    </View>
+  </View>
+);
+
+const stepStyles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'flex-start' },
+  divided: {
+    marginTop: s(10),
+    paddingTop: s(10),
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.border,
+  },
+  disc: {
+    width: s(22),
+    height: s(22),
+    borderRadius: radius.full,
+    backgroundColor: palette.gray200,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  discDone: { backgroundColor: palette.green },
+  discText: font(10, '800', { color: palette.slate500 }),
+  body: { flex: 1, minWidth: 0, marginLeft: s(10) },
+  title: font(11, '800', { color: palette.navy }),
+  titleDone: { color: palette.green },
+  detail: {
+    ...font(9, '500', { color: palette.slate500, lineHeight: 1.4 }),
+    marginTop: s(2),
+  },
+  note: {
+    ...font(9, '600', { color: palette.slate700, lineHeight: 1.4 }),
+    marginTop: s(3),
+  },
+});
 
 export const TripDetailsScreen: React.FC = () => {
   const navigation =
@@ -243,6 +338,9 @@ export const TripDetailsScreen: React.FC = () => {
   const customer = booking?.customer;
   const customerName: string =
     customer?.company || customer?.user?.name || 'Customer';
+  // The name as the customer is known, without the placeholder — for sentences.
+  const knownCustomer: string | undefined =
+    customer?.company || customer?.user?.name || undefined;
   const customerContact: string = customer?.user?.name ?? '';
   const customerMobile: string = customer?.user?.mobile ?? '';
 
@@ -297,6 +395,21 @@ export const TripDetailsScreen: React.FC = () => {
       Array.isArray(trackingApi.data?.halts) ? trackingApi.data.halts : [],
     [trackingApi.data],
   );
+
+  /*
+   * Papers asked for on this trip — of the customer by the office or the
+   * driver, or of the office by the driver — newest first. `useApi` re-reads
+   * it whenever this screen regains focus (its own `useFocusEffect`), so
+   * coming back from Request Documents shows the rows just sent.
+   */
+  const {
+    data: requestData,
+    loading: requestsLoading,
+    error: requestsError,
+    refetch: refetchRequests,
+  } = useApi(() => tripService.documentRequestHistory(tripId), [tripId]);
+  const docRequests: TripDocumentRequest[] = requestData ?? [];
+  const [withdrawing, setWithdrawing] = useState<string | null>(null);
 
   const [openingDoc, setOpeningDoc] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -359,10 +472,12 @@ export const TripDetailsScreen: React.FC = () => {
    * the device's own viewer. Deliberately not a jump to another screen: the
    * office wants to see the scan the driver or customer actually filed.
    */
-  const viewDocument = useCallback(async (id: string) => {
+  const viewDocument = useCallback(async (id: string, signedUrl?: string) => {
     setOpeningDoc(id);
     try {
-      await openExternalUrl(await documentService.downloadUrl(id));
+      // A link already signed by the API is opened as given; otherwise one
+      // is asked for.
+      await openExternalUrl(signedUrl ?? (await documentService.downloadUrl(id)));
     } catch (failure) {
       setDialog({
         tone: 'danger',
@@ -426,30 +541,128 @@ export const TripDetailsScreen: React.FC = () => {
     [navigation, tripId],
   );
 
-  // Only a running trip can be handed over or moved on; a delivered or
-  // cancelled one is settled, so these actions are offered only while there is
-  // something to change.
-  const canReassign =
-    trip?.status === 'SCHEDULED' || trip?.status === 'IN_TRANSIT';
+  const openRequestDocuments = useCallback(
+    () =>
+      navigation.navigate('RequestDocuments', {
+        tripId,
+        reference: trip?.reference,
+        customerName: knownCustomer,
+      }),
+    [navigation, tripId, trip?.reference, knownCustomer],
+  );
+
+  /**
+   * Opens the paper that answered a request. The stored document gets a
+   * freshly signed link, as the grid above does; the history's own signed
+   * link stands in when there is no id to sign.
+   */
+  const openRequested = useCallback(
+    (request: TripDocumentRequest) => {
+      if (request.documentId) {
+        viewDocument(request.documentId);
+      } else if (request.documentUrl) {
+        viewDocument(request.id, request.documentUrl);
+      }
+    },
+    [viewDocument],
+  );
+
+  const runWithdraw = useCallback(
+    async (request: TripDocumentRequest) => {
+      setDialog(null);
+      setWithdrawing(request.id);
+      try {
+        await tripService.cancelDocumentRequest(tripId, request.id);
+      } catch (failure) {
+        setDialog({
+          tone: 'danger',
+          icon: 'alert-circle',
+          title: 'Could not withdraw it',
+          message:
+            failure instanceof Error
+              ? failure.message
+              : 'The request was not withdrawn. Check your signal and try again.',
+          confirmLabel: 'Close',
+          onConfirm: () => setDialog(null),
+        });
+      } finally {
+        setWithdrawing(null);
+        // Either way the list is re-read — a failure usually means it was
+        // answered or withdrawn elsewhere, and the row should say so.
+        refetchRequests();
+      }
+    },
+    [tripId, refetchRequests],
+  );
+
+  const confirmWithdraw = useCallback(
+    (request: TripDocumentRequest) => {
+      setDialog({
+        tone: 'danger',
+        icon: 'x',
+        title: 'Withdraw this request?',
+        message: `${knownCustomer ?? 'The customer'} will stop being asked for the ${request.documentType}. You can request it again later.`,
+        confirmLabel: 'Withdraw',
+        cancelLabel: 'Keep it',
+        onConfirm: () => runWithdraw(request),
+      });
+    },
+    [knownCustomer, runWithdraw],
+  );
 
   /*
-   * The office's sign-off on a finished run.
+   * Where the trip is in the three-way close.
    *
-   * A driver ending a trip frees the lorry and the load is off, but the job is
-   * not closed until someone here has been through what the run produced — the
-   * photos above, the papers below. Until that happens the trip sits delivered
-   * and unapproved, which is what this card says.
+   * The driver ending the run sets `deliveredAt` but leaves the trip
+   * IN_TRANSIT, with the lorry and driver still on it, until the customer has
+   * confirmed and the office has approved. So "in transit" alone no longer
+   * means on the road. A trip closed under the old rule (DELIVERED, never
+   * signed off) can still be approved without the customer — `legacyDelivered`
+   * keeps that path open.
    */
-  const [approving, setApproving] = useState(false);
+  const deliveredAt: string | null = (trip?.deliveredAt as string | null) ?? null;
   const approvedAt: string | null =
     (trip?.completionApprovedAt as string | null) ?? null;
   const approvalNote: string | null =
     (trip?.completionNote as string | null) ?? null;
-  const awaitingApproval = trip?.status === 'DELIVERED' && !approvedAt;
+  const customerConfirmedAt: string | null =
+    (trip?.customerConfirmedAt as string | null) ?? null;
+  const customerConfirmNote: string | null =
+    (trip?.customerConfirmNote as string | null) ?? null;
+  const handedOver = trip?.status === 'IN_TRANSIT' && Boolean(deliveredAt);
+  const legacyDelivered = trip?.status === 'DELIVERED' && !approvedAt;
+  const awaitingCompletion = handedOver || legacyDelivered;
+  const customerDone = Boolean(customerConfirmedAt);
+  // The driver's half is in by definition here; the customer's is the gate.
+  const readyToComplete = awaitingCompletion && (customerDone || legacyDelivered);
+  const statusText: string = handedOver
+    ? 'Delivered · awaiting completion'
+    : String(trip?.status ?? '').replace('_', ' ');
+
+  // Only a running trip can be handed over or moved on; a delivered or
+  // cancelled one is settled, so these actions are offered only while there is
+  // something to change. Once the load is handed over the server refuses
+  // pickups, milestones, reassigning and cancelling, so they go too.
+  const canReassign =
+    (trip?.status === 'SCHEDULED' || trip?.status === 'IN_TRANSIT') &&
+    !deliveredAt;
+
+  /*
+   * The completion checklist's own state — the approval in flight, the
+   * record-for-the-customer form (inline rather than a sheet, so the keyboard
+   * pushes the screen and not a modal), and whatever the server last refused,
+   * shown on the card itself.
+   */
+  const [approving, setApproving] = useState(false);
+  const [recordingForCustomer, setRecordingForCustomer] = useState(false);
+  const [customerNote, setCustomerNote] = useState('');
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const [completionError, setCompletionError] = useState('');
 
   const runApproval = useCallback(async () => {
     setDialog(null);
     setApproving(true);
+    setCompletionError('');
     try {
       await tripService.approveCompletion(tripId);
       refetch();
@@ -458,43 +671,67 @@ export const TripDetailsScreen: React.FC = () => {
         icon: 'check-circle-2',
         title: 'Trip completed',
         message:
-          'The paperwork is approved and this run is closed. The customer and the driver have been told.',
+          'This run is closed — the lorry and the driver are free for the next trip. The customer and the driver have been told.',
         confirmLabel: 'Done',
         onConfirm: () => setDialog(null),
       });
     } catch (failure) {
-      setDialog({
-        tone: 'danger',
-        icon: 'alert-circle',
-        title: 'Could not approve the trip',
-        message:
-          failure instanceof Error
-            ? failure.message
-            : 'The approval did not go through. Check your signal and try again.',
-        confirmLabel: 'Close',
-        onConfirm: () => setDialog(null),
-      });
+      setCompletionError(
+        failure instanceof Error
+          ? failure.message
+          : 'The approval did not go through. Check your signal and try again.',
+      );
     } finally {
       setApproving(false);
     }
   }, [tripId, refetch]);
 
   /*
-   * Asked before it is done. This is the office certifying that a run's
-   * paperwork is in order — not a toggle to flick and undo, so it gets a
-   * confirmation that names what approving actually sets off.
+   * Asked before it is done. This is the office closing the run — not a
+   * toggle to flick and undo, so it gets a confirmation that names what
+   * approving actually sets off.
    */
   const confirmApproval = useCallback(() => {
     setDialog({
       tone: 'gold',
       icon: 'clipboard-check',
-      title: 'Mark this trip completed?',
+      title: 'Complete this trip?',
       message:
-        'Check the delivery photos and papers on this screen first. Approving closes the run and notifies the customer and the driver.',
-      confirmLabel: 'Trip Completed',
+        'Check the delivery photos and papers on this screen first. Completing closes the run, frees the lorry and the driver, and notifies the customer and the driver.',
+      confirmLabel: 'Trip Complete',
+      cancelLabel: 'Not yet',
       onConfirm: runApproval,
     });
   }, [runApproval]);
+
+  /*
+   * The customer's confirmation, recorded by the office — a customer who said
+   * so on a call, or has no app. The note has to say who confirmed and how:
+   * it is what the timeline shows in place of their own tick.
+   */
+  const saveCustomerConfirmation = useCallback(async () => {
+    const note = customerNote.trim();
+    if (note.length < 5) {
+      setCompletionError('Say who confirmed and how — at least a few words.');
+      return;
+    }
+    setSavingCustomer(true);
+    setCompletionError('');
+    try {
+      await tripService.confirmForCustomer(tripId, note);
+      setRecordingForCustomer(false);
+      setCustomerNote('');
+      refetch();
+    } catch (failure) {
+      setCompletionError(
+        failure instanceof Error
+          ? failure.message
+          : 'The confirmation was not recorded. Check your signal and try again.',
+      );
+    } finally {
+      setSavingCustomer(false);
+    }
+  }, [customerNote, tripId, refetch]);
 
   const openTimeline = useCallback(
     () => navigation.navigate('TripTimeline', { tripId }),
@@ -521,7 +758,7 @@ export const TripDetailsScreen: React.FC = () => {
         title={trip?.reference ? `Trip ${trip.reference}` : 'Trip'}
         subtitle={
           trip?.status
-            ? trip.status.replace('_', ' ').toLowerCase()
+            ? statusText.toLowerCase()
             : loading
               ? 'Loading…'
               : ''
@@ -569,9 +806,14 @@ export const TripDetailsScreen: React.FC = () => {
             <View style={styles.heroHead}>
               <Text style={styles.heroRef}>#{trip?.reference ?? '—'}</Text>
               <View style={styles.heroChip}>
-                <BlinkDot color={palette.gold} size={5} />
+                {/* Nothing is moving once it is handed over — no live dot. */}
+                {handedOver ? (
+                  <Icon name="package-check" size={10} color={palette.gold} />
+                ) : (
+                  <BlinkDot color={palette.gold} size={5} />
+                )}
                 <Text style={styles.heroChipText}>
-                  {(trip?.status ?? '').replace('_', ' ') || '—'}
+                  {statusText.toUpperCase() || '—'}
                 </Text>
               </View>
             </View>
@@ -782,81 +1024,177 @@ export const TripDetailsScreen: React.FC = () => {
           </View>
         ) : null}
 
-        {/* Trip completion — the office's sign-off, sitting directly after the
-            tracking and halts it is a judgement on, and above the papers it is
-            a judgement of. Only a delivered run shows it: there is nothing to
-            approve while the lorry is still out. */}
-        {trip?.status === 'DELIVERED' ? (
+        {/* Trip completion — driver, customer, office, sitting directly after
+            the tracking and halts it is a judgement on, and above the papers it
+            is a judgement of. Shown once the load is handed over: a trip closes
+            only when all three agree, and until then the lorry and driver stay
+            on it. The button stays greyed until the first two are in — the
+            server refuses it otherwise. */}
+        {approvedAt || awaitingCompletion ? (
           <>
             <Text style={[styles.section, styles.sectionGap]}>
               TRIP COMPLETION
             </Text>
             <Card padding={12}>
-              {awaitingApproval ? (
+              {approvedAt ? (
                 <>
                   <View style={styles.approveHead}>
                     <IconWell
-                      icon="clipboard-check"
+                      icon="check-circle-2"
                       size={38}
                       iconSize={20}
-                      backgroundColor={palette.goldTint}
-                      color={palette.gold}
+                      backgroundColor={palette.greenTint}
+                      color={palette.green}
                       borderRadius={radius.lg}
                     />
                     <View style={styles.driverBody}>
-                      <Text style={styles.driverName}>
-                        Awaiting your approval
-                      </Text>
+                      <Text style={styles.driverName}>Trip completed</Text>
                       <Text style={styles.driverPhone}>
-                        The load is off and the lorry is free, but this run
-                        stays open until you approve it.
+                        {approvalNote ??
+                          `Approved by the office · ${formatWhen(approvedAt)}`}
                       </Text>
                     </View>
                   </View>
-                  <Button
-                    label={approving ? 'Approving…' : 'Trip Completed'}
-                    variant="gold"
-                    icon="check-circle-2"
-                    iconSize={14}
-                    padding={10}
-                    fontSize={12}
-                    gap={6}
-                    loading={approving}
-                    disabled={approving}
-                    onPress={confirmApproval}
-                    style={styles.reassignBtn}
-                  />
+                  {customerConfirmedAt ? (
+                    <Text style={styles.custLine}>
+                      Customer confirmed ✓ · {formatWhen(customerConfirmedAt)}
+                    </Text>
+                  ) : null}
                 </>
               ) : (
-                <View style={styles.approveHead}>
-                  <IconWell
-                    icon="check-circle-2"
-                    size={38}
-                    iconSize={20}
-                    backgroundColor="#dcfce7"
-                    color={palette.green}
-                    borderRadius={radius.lg}
+                <>
+                  <Text style={styles.checkIntro}>
+                    {legacyDelivered
+                      ? 'Delivered before customer confirmation was needed — your approval alone closes it.'
+                      : `Completes when the driver, the customer and the office have all signed off. Until then ${registration} and ${driverName} stay on this trip.`}
+                  </Text>
+
+                  <CompletionStep
+                    n={1}
+                    done
+                    title="Driver completed ✓"
+                    detail={[
+                      formatWhen(deliveredAt),
+                      trip.receiverName ? `received by ${trip.receiverName}` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   />
-                  <View style={styles.driverBody}>
-                    <Text style={styles.driverName}>Trip completed</Text>
-                    <Text style={styles.driverPhone}>
-                      {approvalNote ??
-                        `Approved by the office${
-                          approvedAt
-                            ? ` · ${new Date(approvedAt).toLocaleString(
-                                'en-IN',
-                                {
-                                  day: '2-digit',
-                                  month: 'short',
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                },
-                              )}`
-                            : ''
-                        }`}
-                    </Text>
-                  </View>
-                </View>
+
+                  <CompletionStep
+                    n={2}
+                    done={customerDone}
+                    divided
+                    title={
+                      customerDone
+                        ? 'Customer confirmed ✓'
+                        : legacyDelivered
+                          ? 'Customer has not confirmed'
+                          : 'Waiting for the customer'
+                    }
+                    detail={
+                      customerDone
+                        ? formatWhen(customerConfirmedAt)
+                        : legacyDelivered
+                          ? 'Optional on this older trip.'
+                          : 'They confirm in the customer app by accepting the Terms & Conditions.'
+                    }
+                    note={customerDone ? customerConfirmNote : null}
+                  >
+                    {customerDone ? null : recordingForCustomer ? (
+                      <View style={styles.stepAction}>
+                        <Input
+                          label="Who confirmed and how"
+                          required
+                          placeholder="e.g. Ravi confirmed on a call at 5 PM"
+                          value={customerNote}
+                          onChangeText={setCustomerNote}
+                          maxLength={300}
+                          multiline
+                          minHeight={56}
+                          editable={!savingCustomer}
+                        />
+                        <View style={styles.formActions}>
+                          <Button
+                            label="Cancel"
+                            variant="ghost"
+                            flex={1}
+                            padding={9}
+                            fontSize={11}
+                            disabled={savingCustomer}
+                            onPress={() => {
+                              setRecordingForCustomer(false);
+                              setCompletionError('');
+                            }}
+                          />
+                          <Button
+                            label={savingCustomer ? 'Saving…' : 'Save'}
+                            variant="gold"
+                            icon="check"
+                            iconSize={13}
+                            flex={1.4}
+                            padding={9}
+                            fontSize={11}
+                            gap={5}
+                            loading={savingCustomer}
+                            disabled={
+                              savingCustomer || customerNote.trim().length < 5
+                            }
+                            onPress={saveCustomerConfirmation}
+                          />
+                        </View>
+                      </View>
+                    ) : (
+                      <Button
+                        label="Record customer's confirmation"
+                        variant="outline"
+                        icon="user-check"
+                        iconSize={13}
+                        padding={8}
+                        fontSize={11}
+                        gap={6}
+                        borderColor={palette.border}
+                        onPress={() => {
+                          setCustomerNote('');
+                          setCompletionError('');
+                          setRecordingForCustomer(true);
+                        }}
+                        style={styles.stepAction}
+                      />
+                    )}
+                  </CompletionStep>
+
+                  <CompletionStep
+                    n={3}
+                    done={false}
+                    divided
+                    title="Office approval"
+                    detail={
+                      readyToComplete
+                        ? 'Check the photos and papers below, then complete the trip — the lorry and the driver are freed.'
+                        : 'Unlocks once the customer confirms.'
+                    }
+                  >
+                    <Button
+                      label={approving ? 'Completing…' : 'Trip Complete'}
+                      variant={readyToComplete ? 'gold' : 'outline'}
+                      icon={readyToComplete ? 'check-circle-2' : 'lock'}
+                      iconSize={14}
+                      padding={10}
+                      fontSize={12}
+                      gap={6}
+                      borderColor={readyToComplete ? undefined : palette.border}
+                      loading={approving}
+                      disabled={!readyToComplete || approving}
+                      onPress={confirmApproval}
+                      style={styles.stepAction}
+                    />
+                  </CompletionStep>
+
+                  {completionError ? (
+                    <Text style={styles.completionError}>{completionError}</Text>
+                  ) : null}
+                </>
               )}
             </Card>
           </>
@@ -962,6 +1300,165 @@ export const TripDetailsScreen: React.FC = () => {
             </Text>
           </View>
         )}
+
+        {/* Document requests — every paper asked for on this trip and where
+            it stands. A received one opens the file that answered it; one the
+            office asked of the customer can be withdrawn while it waits. */}
+        <Text style={[styles.section, styles.sectionGap]}>
+          DOCUMENT REQUESTS
+        </Text>
+        {docRequests.length ? (
+          <Card padding={12}>
+            {docRequests.map((request, index) => {
+              const meta =
+                REQUEST_STATUS[request.status] ?? REQUEST_STATUS.PENDING;
+              const received = request.status === 'FULFILLED';
+              const openable =
+                received && Boolean(request.documentId || request.documentUrl);
+              const openKey = request.documentId ?? request.id;
+              const canWithdraw =
+                request.status === 'PENDING' &&
+                request.requestedBy === 'office' &&
+                request.requestedFrom === 'customer';
+              const asked = [
+                request.requestedBy === 'office'
+                  ? 'Asked by you'
+                  : 'Asked by driver',
+                // A driver asking the office is the office's to answer.
+                request.requestedFrom === 'office' ? 'for the office' : '',
+                formatWhen(request.createdAt),
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return (
+                <Pressable
+                  key={request.id}
+                  onPress={openable ? () => openRequested(request) : undefined}
+                  disabled={!openable || openingDoc !== null}
+                  accessibilityRole={openable ? 'button' : undefined}
+                  accessibilityLabel={
+                    openable
+                      ? `Open the ${request.documentType} received`
+                      : `${request.documentType}, ${meta.label}`
+                  }
+                  style={({ pressed }) => [
+                    styles.reqRow,
+                    index > 0 ? styles.reqRowDivided : null,
+                    pressed && openable ? styles.pressed : null,
+                  ]}
+                >
+                  {openingDoc === openKey ? (
+                    <View style={[styles.reqWell, { backgroundColor: meta.bg }]}>
+                      <ActivityIndicator size="small" color={meta.color} />
+                    </View>
+                  ) : (
+                    <IconWell
+                      icon={meta.icon}
+                      size={30}
+                      iconSize={14}
+                      backgroundColor={meta.bg}
+                      color={meta.color}
+                      borderRadius={radius.md}
+                    />
+                  )}
+                  <View style={styles.reqBody}>
+                    <View style={styles.reqHead}>
+                      <Text style={styles.reqType} numberOfLines={1}>
+                        {request.documentType}
+                      </Text>
+                      <View
+                        style={[styles.reqPill, { backgroundColor: meta.bg }]}
+                      >
+                        <Text style={[styles.reqPillText, { color: meta.color }]}>
+                          {meta.label}
+                        </Text>
+                        {openable ? (
+                          <View style={styles.reqPillIcon}>
+                            <Icon name="eye" size={11} color={meta.color} />
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                    <Text style={styles.reqMeta} numberOfLines={1}>
+                      {asked}
+                    </Text>
+                    {received ? (
+                      <Text style={styles.reqMeta} numberOfLines={1}>
+                        {[
+                          `Received ${formatWhen(request.fulfilledAt)}`.trim(),
+                          request.documentName,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    ) : null}
+                    {request.note ? (
+                      <Text style={styles.reqNote}>“{request.note}”</Text>
+                    ) : null}
+                    {canWithdraw ? (
+                      <Pressable
+                        onPress={() => confirmWithdraw(request)}
+                        disabled={withdrawing !== null}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Withdraw the ${request.documentType} request`}
+                        accessibilityState={{ busy: withdrawing === request.id }}
+                        style={({ pressed }) => [
+                          styles.reqWithdraw,
+                          (pressed || withdrawing === request.id) &&
+                            styles.pressed,
+                        ]}
+                      >
+                        <Icon name="x" size={11} color={palette.red} />
+                        <Text style={styles.reqWithdrawText}>
+                          {withdrawing === request.id
+                            ? 'Withdrawing…'
+                            : 'Withdraw'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </Card>
+        ) : requestsLoading ? (
+          <View style={styles.docEmpty}>
+            <ActivityIndicator size="small" color={palette.navy} />
+            <Text style={styles.docEmptyText}>Loading requests…</Text>
+          </View>
+        ) : requestsError ? (
+          <Pressable
+            onPress={refetchRequests}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading the document requests"
+            style={({ pressed }) => [styles.docEmpty, pressed && styles.pressed]}
+          >
+            <Icon name="alert-circle" size={14} color={palette.slate400} />
+            <Text style={styles.docEmptyText}>
+              Could not load the requests. Tap to try again.
+            </Text>
+          </Pressable>
+        ) : (
+          <View style={styles.docEmpty}>
+            <Icon name="file-text" size={14} color={palette.slate400} />
+            <Text style={styles.docEmptyText}>No documents requested yet.</Text>
+          </View>
+        )}
+        {/* A cancelled trip has nothing left to document — the API refuses. */}
+        {trip?.status !== 'CANCELLED' ? (
+          <Button
+            label="Request documents"
+            variant="outline"
+            icon="file-text"
+            iconSize={14}
+            padding={9}
+            fontSize={11}
+            gap={6}
+            borderColor={palette.border}
+            onPress={openRequestDocuments}
+          />
+        ) : null}
 
         {/* The four papers the web admin produces for a trip, all handed to
             the OS share sheet: the report as a filed workbook or as a PDF with
@@ -1092,6 +1589,7 @@ export const TripDetailsScreen: React.FC = () => {
         title={dialog?.title ?? ''}
         message={dialog?.message}
         confirmLabel={dialog?.confirmLabel}
+        cancelLabel={dialog?.cancelLabel}
         onConfirm={() => dialog?.onConfirm()}
         onCancel={closeDialog}
       />
@@ -1267,6 +1765,22 @@ const styles = StyleSheet.create({
   reassignBtn: { marginTop: s(10) },
   /* The completion card's heading row — icon beside the state it reports. */
   approveHead: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
+  // The customer's confirmation under an approved trip's heading.
+  custLine: {
+    ...font(9, '800', { color: palette.green }),
+    marginTop: s(8),
+  },
+  /* The completion checklist — margins, not `gap`, for the column spacing. */
+  checkIntro: {
+    ...font(9, '500', { color: palette.slate500, lineHeight: 1.4 }),
+    marginBottom: s(10),
+  },
+  stepAction: { marginTop: s(8) },
+  formActions: { flexDirection: 'row', gap: s(8), marginTop: s(8) },
+  completionError: {
+    ...font(10, '700', { color: palette.red, lineHeight: 1.4 }),
+    marginTop: s(10),
+  },
   gps: font(9, '800', { color: palette.gold }),
 
   customerRow: { flexDirection: 'row', alignItems: 'center', gap: s(10) },
@@ -1320,6 +1834,63 @@ const styles = StyleSheet.create({
   docEmptyText: {
     ...font(9, '600', { color: palette.slate500 }),
     flex: 1,
+  },
+
+  /* Document requests — one row per ask, divided by a hairline. Margins, not
+     `gap`, keep the column spacing honest on the New Architecture. */
+  reqRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  reqRowDivided: {
+    marginTop: s(10),
+    paddingTop: s(10),
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.border,
+  },
+  // Stands in for the icon well while the received paper is being opened.
+  reqWell: {
+    width: s(30),
+    height: s(30),
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reqBody: { flex: 1, minWidth: 0, marginLeft: s(10) },
+  reqHead: { flexDirection: 'row', alignItems: 'center' },
+  reqType: {
+    ...font(11, '800', { color: palette.navy }),
+    flex: 1,
+    marginRight: s(8),
+  },
+  reqPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: s(2),
+    paddingHorizontal: s(7),
+    borderRadius: radius.sm,
+  },
+  reqPillText: {
+    ...font(8, '800', { letterSpacing: 0.4 }),
+    textTransform: 'uppercase',
+  },
+  reqPillIcon: { marginLeft: s(4) },
+  reqMeta: { ...font(9, '500', { color: palette.slate500 }), marginTop: s(2) },
+  reqNote: {
+    ...font(9, '600', { color: palette.slate700, lineHeight: 1.4 }),
+    marginTop: s(4),
+  },
+  reqWithdraw: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: s(7),
+    paddingVertical: s(4),
+    paddingHorizontal: s(9),
+    borderRadius: radius.full,
+    borderWidth: s(1),
+    borderColor: palette.redSoft,
+  },
+  reqWithdrawText: {
+    ...font(9, '800', { color: palette.red }),
+    marginLeft: s(4),
   },
 
   pressed: { opacity: 0.8 },

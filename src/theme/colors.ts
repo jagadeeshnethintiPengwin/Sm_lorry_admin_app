@@ -53,6 +53,8 @@ export const palette = {
 
   // Status / misc
   green: '#16a34a',
+  /** Background for a filled or completed slot. */
+  greenTint: '#dcfce7',
   sky: '#87ceeb',
   mapBg: '#f2f7ff',
   mapGrid: '#e8eef7',

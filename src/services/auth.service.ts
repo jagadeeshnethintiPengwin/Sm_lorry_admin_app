@@ -30,6 +30,30 @@ export type PinLoginResponse =
   | ({ pinSet: true } & VerifyOtpResponse);
 
 /**
+ * What `login` answers instead of a session when two-step sign-in is on.
+ *
+ * The password was right, but it no longer buys tokens on its own: the server
+ * has emailed a six-digit code, and `login/verify` trades that code — against
+ * this `challengeId` — for the session. Nothing here is a credential.
+ */
+export type TwoStepChallenge = {
+  twoFactorRequired: true;
+  challengeId: string;
+  channel: 'email';
+  /** Masked by the server — `ow•••@simhadritransport.in` — so safe to show. */
+  destination: string;
+  /** Seconds until another code may be asked for. */
+  resendIn: number;
+  /** Seconds the emailed code stays good — 300. */
+  expiresIn: number;
+  /** Only from a development API with no mailer; never in production. */
+  devCode?: string;
+};
+
+/** A session when two-step is off, or the second step when it is on. */
+export type LoginResponse = VerifyOtpResponse | TwoStepChallenge;
+
+/**
  * Forgets the session on this handset, and tells nobody.
  *
  * The local half of `logout`, on its own for the one case where there is no
@@ -127,17 +151,62 @@ export const authService = {
    *
    * The same endpoint the web panel uses, and it hands back the same token pair
    * as the OTP flow, so everything downstream (the socket, push, the refresh
-   * token) is set up identically. No PIN, no code — one form, one request.
+   * token) is set up identically.
+   *
+   * With two-step sign-in on, a correct password answers a `TwoStepChallenge`
+   * and no tokens. That is handed straight back: there is no session yet, so
+   * nothing is stored, no socket is opened and no push token is registered
+   * until `verifyTwoStep` has the emailed code.
    */
-  async login(email: string, password: string): Promise<VerifyOtpResponse> {
-    const { data } = await apiClient.post<VerifyOtpResponse>(
+  async login(email: string, password: string): Promise<LoginResponse> {
+    const { data } = await apiClient.post<LoginResponse>(
       '/auth/login',
       { email, password },
+      { headers: { 'X-Anonymous': 'true' } },
+    );
+    if ('twoFactorRequired' in data) {
+      return data;
+    }
+    await setAuthToken(data.token, data.refreshToken);
+    connectRealtime();
+    registerForPush().catch(() => undefined);
+    return data;
+  },
+
+  /**
+   * POST /auth/login/verify — the emailed code, for the challenge `login` opened.
+   *
+   * Answers the session the password alone no longer hands out, and sets it up
+   * exactly as a one-step `login` does.
+   */
+  async verifyTwoStep(
+    challengeId: string,
+    code: string,
+  ): Promise<VerifyOtpResponse> {
+    const { data } = await apiClient.post<VerifyOtpResponse>(
+      '/auth/login/verify',
+      { challengeId, code },
       { headers: { 'X-Anonymous': 'true' } },
     );
     await setAuthToken(data.token, data.refreshToken);
     connectRealtime();
     registerForPush().catch(() => undefined);
+    return data;
+  },
+
+  /**
+   * POST /auth/login/resend — a fresh code, emailed again.
+   *
+   * The answer is a *new* challenge — the code in the new email belongs to it,
+   * not to the `challengeId` passed in — so the caller verifies against the one
+   * returned here from then on.
+   */
+  async resendTwoStep(challengeId: string): Promise<TwoStepChallenge> {
+    const { data } = await apiClient.post<TwoStepChallenge>(
+      '/auth/login/resend',
+      { challengeId },
+      { headers: { 'X-Anonymous': 'true' } },
+    );
     return data;
   },
 

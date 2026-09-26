@@ -46,7 +46,7 @@ type Tab = 'transit' | 'scheduled' | 'delivered' | 'cancelled';
  * delivered one reads green and finished, a cancelled one greys out, and only a
  * genuinely scheduled trip says it is waiting at the pickup.
  */
-type PillKind = Tab;
+type PillKind = Tab | 'awaiting';
 
 type TripRow = {
   id: string;
@@ -60,6 +60,8 @@ type TripRow = {
   distance?: string;
   progress?: number;
   loadingNote?: string;
+  /** The customer has confirmed the delivery (in their app, or via the office). */
+  customerConfirmed: boolean;
   tab: Tab;
 };
 
@@ -71,6 +73,19 @@ const STATUS_META: Record<
   SCHEDULED: { label: 'AT PICKUP', kind: 'scheduled', rail: palette.navy, tab: 'scheduled' },
   DELIVERED: { label: 'DELIVERED', kind: 'delivered', rail: palette.green, tab: 'delivered' },
   CANCELLED: { label: 'CANCELLED', kind: 'cancelled', rail: palette.slate400, tab: 'cancelled' },
+};
+
+/*
+ * Handed over, not yet closed. The trip stays IN_TRANSIT — and in the Transit
+ * tab, whose count the API keeps by status — until the customer confirms and
+ * the office approves, but it should not wear a pulsing "IN TRANSIT" for a
+ * load that is already off the lorry.
+ */
+const AWAITING_META = {
+  label: 'DELIVERED · AWAITING COMPLETION',
+  kind: 'awaiting' as const,
+  rail: palette.green,
+  tab: 'transit' as const,
 };
 
 /**
@@ -92,7 +107,10 @@ function toRow(trip: AdminTrip): TripRow {
 
   const distanceKm = Number(trip.distanceKm ?? 0);
   const coveredKm = Number(trip.coveredKm ?? 0);
-  const meta = STATUS_META[status] ?? STATUS_META.SCHEDULED;
+  const meta =
+    status === 'IN_TRANSIT' && trip.deliveredAt
+      ? AWAITING_META
+      : (STATUS_META[status] ?? STATUS_META.SCHEDULED);
 
   return {
     id: String(trip.id),
@@ -114,6 +132,7 @@ function toRow(trip: AdminTrip): TripRow {
       ? Math.min(100, Math.round((coveredKm / distanceKm) * 100))
       : undefined,
     loadingNote: booking.material ? String(booking.material) : undefined,
+    customerConfirmed: Boolean(trip.customerConfirmedAt),
     tab: meta.tab,
   };
 }
@@ -246,12 +265,21 @@ export const TripsScreen: React.FC = () => {
             key={trip.id}
             padding={11}
             onPress={() => openTrip(trip.id)}
-            accessibilityLabel={`${trip.reference}, ${trip.statusLabel}`}
+            accessibilityLabel={`${trip.reference}, ${trip.statusLabel}${
+              trip.customerConfirmed ? ', confirmed by customer' : ''
+            }`}
             accentColor={trip.rail}
             accentWidth={3}
           >
             <View style={styles.head}>
-              <Text style={styles.reference}>{trip.reference}</Text>
+              <View style={styles.headLeft}>
+                <Text style={styles.reference}>{trip.reference}</Text>
+                {/* The customer's half is in — on an open trip, it is only
+                    waiting on the office now. */}
+                {trip.customerConfirmed ? (
+                  <Text style={styles.custMark}>✓ CUSTOMER</Text>
+                ) : null}
+              </View>
               <View style={[styles.pill, PILL_STYLE[trip.pillKind]]}>
                 {trip.pillKind === 'transit' ? (
                   <BlinkDot color={palette.gold} size={4} />
@@ -348,7 +376,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: s(6),
   },
+  headLeft: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
   reference: font(10, '800', { color: palette.red }),
+  custMark: {
+    ...font(8, '800', { color: palette.green, letterSpacing: 0.4 }),
+    marginLeft: s(6),
+  },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -360,11 +393,13 @@ const styles = StyleSheet.create({
   pillTransit: { backgroundColor: palette.navyTint },
   pillScheduled: { backgroundColor: palette.redSoft },
   pillDelivered: { backgroundColor: 'rgba(22,163,74,0.14)' },
+  pillAwaiting: { backgroundColor: palette.goldTint },
   pillCancelled: { backgroundColor: palette.gray200 },
   pillText: font(8, '800', {}),
   pillTextTransit: { color: palette.navy },
   pillTextScheduled: { color: palette.redDark },
   pillTextDelivered: { color: palette.green },
+  pillTextAwaiting: { color: palette.goldText },
   pillTextCancelled: { color: palette.slate700 },
 
   route: { marginBottom: s(6) },
@@ -399,6 +434,7 @@ const PILL_STYLE: Record<PillKind, object> = {
   transit: styles.pillTransit,
   scheduled: styles.pillScheduled,
   delivered: styles.pillDelivered,
+  awaiting: styles.pillAwaiting,
   cancelled: styles.pillCancelled,
 };
 
@@ -407,5 +443,6 @@ const PILL_TEXT_STYLE: Record<PillKind, object> = {
   transit: styles.pillTextTransit,
   scheduled: styles.pillTextScheduled,
   delivered: styles.pillTextDelivered,
+  awaiting: styles.pillTextAwaiting,
   cancelled: styles.pillTextCancelled,
 };

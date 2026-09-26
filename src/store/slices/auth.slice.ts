@@ -23,10 +23,22 @@ const initialState: AuthState = {
   error: null,
 };
 
+/**
+ * Resolves to the session, or — with two-step sign-in on — to the challenge
+ * for the emailed code. Only the session signs anyone in; the challenge goes
+ * back to the login screen for `verifyTwoStep`.
+ */
 export const login = createAsyncThunk(
   'auth/login',
   ({ email, password }: { email: string; password: string }) =>
     authService.login(email, password),
+);
+
+/** The second step: the emailed code, for the challenge `login` answered. */
+export const verifyTwoStep = createAsyncThunk(
+  'auth/verifyTwoStep',
+  ({ challengeId, code }: { challengeId: string; code: string }) =>
+    authService.verifyTwoStep(challengeId, code),
 );
 
 export const sendOtp = createAsyncThunk('auth/sendOtp', (mobile: string) =>
@@ -79,12 +91,33 @@ const authSlice = createSlice({
       })
       .addCase(login.fulfilled, (state, action) => {
         state.status = 'idle';
+        /*
+         * A right password with two-step on is not a sign-in yet — the server
+         * sent a code and no tokens — so nobody is authenticated until
+         * `verifyTwoStep` succeeds.
+         */
+        if ('twoFactorRequired' in action.payload) {
+          return;
+        }
         state.profile = action.payload.profile;
         state.isAuthenticated = true;
       })
       .addCase(login.rejected, (state, action) => {
         state.status = 'failed';
         state.error = action.error.message ?? 'Email or password is not correct';
+      })
+      .addCase(verifyTwoStep.pending, state => {
+        state.status = 'loading';
+        state.error = null;
+      })
+      .addCase(verifyTwoStep.fulfilled, (state, action) => {
+        state.status = 'idle';
+        state.profile = action.payload.profile;
+        state.isAuthenticated = true;
+      })
+      .addCase(verifyTwoStep.rejected, (state, action) => {
+        state.status = 'failed';
+        state.error = action.error.message ?? 'That code is not correct';
       })
       .addCase(sendOtp.pending, state => {
         state.status = 'loading';

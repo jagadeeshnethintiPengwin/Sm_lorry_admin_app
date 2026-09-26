@@ -529,6 +529,36 @@ export const tripService = {
     return data;
   },
 
+  /** File a scan or photo against the trip (waybill, e-way, invoice, LR, loading photo). */
+  attachDocument: async (
+    id: string,
+    body: { name: string; kind: string; fileUrl: string; sizeBytes?: number },
+  ) => {
+    const { data } = await apiClient.post(`/trips/${id}/documents`, body);
+    return data;
+  },
+
+  /**
+   * The office confirming the load is on the lorry — what the driver app's
+   * "Confirm Pickup" does. Files the pickup milestone (with the weight, when
+   * known) and then closes the loading; the API files the milestone once, so
+   * this is safe to repeat. The milestone is what unlocks Mark as delivered.
+   */
+  pickupComplete: async (id: string, loadedTons?: number) => {
+    await apiClient.post(`/trips/${id}/event`, {
+      stage: 'PICKUP_COMPLETED',
+      note:
+        loadedTons !== undefined
+          ? `Loaded ${loadedTons} Ton · Confirmed by the office`
+          : 'Confirmed by the office',
+    });
+    const { data } = await apiClient.post(
+      `/trips/${id}/pickup-complete`,
+      loadedTons !== undefined ? { loadedTons } : {},
+    );
+    return data;
+  },
+
   /** Start a scheduled trip — moves it to IN_TRANSIT and marks it on the road. */
   start: async (id: string) => {
     const { data } = await apiClient.post(`/trips/${id}/start`, {});
@@ -536,30 +566,51 @@ export const tripService = {
   },
 
   /**
-   * Close an in-transit trip from the office — marks it DELIVERED, frees the
-   * vehicle and driver, and completes the booking. Needs who received the load.
+   * Record the delivery from the office — the driver's half, for a run
+   * finished on a phone with no signal. Needs who received the load.
+   *
+   * It does not close the trip: it stays IN_TRANSIT with `deliveredAt` set,
+   * the vehicle and driver still on it, until the customer confirms and the
+   * office approves (`approveCompletion`).
    */
   complete: async (
     id: string,
-    body: { receiverName: string; receiverPhone?: string; remarks?: string },
+    body: {
+      receiverName: string;
+      receiverPhone?: string;
+      remarks?: string;
+    },
   ) => {
     const { data } = await apiClient.post(`/trips/${id}/complete`, body);
     return data;
   },
 
   /**
-   * The office's sign-off on a delivered run.
+   * The office's sign-off — the last of the three, and the one that closes it.
    *
-   * Delivery and completion are two different things: a driver ending a trip
-   * frees the lorry so the next job can go out, but the run is not closed until
-   * someone here has been through what it produced — the delivery photos, the
-   * scans, who signed for it. Only a delivered trip can be approved; approving
-   * one twice is a double-tap, not an error, and the backend treats it as such.
+   * A trip is complete only when the driver has delivered, the customer has
+   * confirmed and the office approves. The server refuses this until the
+   * first two are in (a trip delivered before that rule can still be signed
+   * off alone); success moves it to DELIVERED, completes the booking and frees
+   * the vehicle and driver. Approving twice is a double-tap, not an error.
    */
   approveCompletion: async (id: string, note?: string) => {
     const { data } = await apiClient.post(
       `/trips/${id}/approve-completion`,
       note?.trim() ? { note: note.trim() } : {},
+    );
+    return data;
+  },
+
+  /**
+   * The customer's confirmation, recorded by the office — they confirmed on a
+   * call, or have no app. The note (who confirmed, and how; 5–300 characters)
+   * is required, and is what the timeline shows in place of their own tick.
+   */
+  confirmForCustomer: async (id: string, note: string) => {
+    const { data } = await apiClient.post(
+      `/trips/${id}/customer-confirmation`,
+      { note: note.trim() },
     );
     return data;
   },
@@ -590,7 +641,63 @@ export const tripService = {
     );
     return data;
   },
+
+  /**
+   * Every paper asked for on the trip — by the driver or the office, of the
+   * customer or the office — newest first, answered ones carrying the file.
+   */
+  documentRequestHistory: (id: string) =>
+    listOf<TripDocumentRequest>(`/trips/${id}/document-requests/history`),
+
+  /**
+   * The office asking the customer for papers — one pending request per type,
+   * and the customer is notified. Refused for a cancelled trip.
+   */
+  requestDocuments: async (
+    id: string,
+    documentTypes: string[],
+    note?: string,
+  ) => {
+    const { data } = await apiClient.post<{
+      ok: true;
+      requests: Array<{ id: string; documentType: string }>;
+    }>(`/trips/${id}/document-requests`, {
+      documentTypes,
+      // Left out rather than sent empty — the note is optional.
+      ...(note?.trim() ? { note: note.trim() } : {}),
+    });
+    return data;
+  },
+
+  /** Withdraw a request still pending — the customer stops being asked for it. */
+  cancelDocumentRequest: async (id: string, requestId: string) => {
+    const { data } = await apiClient.post<{ ok: true }>(
+      `/trips/${id}/document-requests/${requestId}/cancel`,
+      {},
+    );
+    return data;
+  },
 };
+
+/** One paper asked for on a trip, as `/trips/:id/document-requests/history` lists it. */
+export interface TripDocumentRequest {
+  id: string;
+  /** Free text — `E-way bill`, `Invoice`, or whatever the asker typed. */
+  documentType: string;
+  note: string | null;
+  /** Who has to hand the paper over. */
+  requestedFrom: 'customer' | 'office';
+  requestedBy: 'driver' | 'office';
+  /** `CANCELLED` = withdrawn by the office before it was answered. */
+  status: 'PENDING' | 'FULFILLED' | 'CANCELLED';
+  createdAt: string;
+  fulfilledAt: string | null;
+  /** The document that answered it, once fulfilled. */
+  documentId: string | null;
+  documentName: string | null;
+  /** Signed, so it opens without a bearer token. */
+  documentUrl: string | null;
+}
 
 export interface TripPaymentInput {
   mode: string;
